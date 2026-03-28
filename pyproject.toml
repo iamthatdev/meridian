@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meridian"
+version = "0.1.0"
+description = "IIAS - Intelligent Item Authoring System"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "peft>=0.5.0",
+    "trl>=0.7.0",
+    "accelerate>=0.20.0",
+    "bitsandbytes>=0.41.0",
+    "psycopg2-binary>=2.9.0",
+    "pydantic>=2.0.0",
+    "textstat>=0.7.0",
+    "loguru>=0.7.0",
+    "python-dotenv>=1.0.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --cov=src --cov-report=html"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
