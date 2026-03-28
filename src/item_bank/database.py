@@ -21,34 +21,41 @@ class DatabaseManager:
     _config: Optional[DatabaseConfig] = None
 
     @classmethod
-    def initialize(cls, config: DatabaseConfig) -> None:
+    def initialize(cls, config) -> None:
         """
         Initialize the connection pool with the given database configuration.
 
         Args:
-            config: DatabaseConfig instance with connection parameters
+            config: Config or DatabaseConfig instance with connection parameters
         """
         if cls._pool is not None:
             logger.warning("Database pool already initialized. Closing existing pool.")
             cls.close_all()
 
-        cls._config = config
+        # Handle both Config and DatabaseConfig objects
+        # If it's a full Config object, extract the database config
+        if hasattr(config, 'database'):
+            db_config = config.database
+        else:
+            db_config = config
+
+        cls._config = db_config
 
         try:
             # Parse the database URL
             # Expected format: postgresql://user:password@host:port/database
-            db_url = config.url
+            db_url = db_config.url
 
             # Create connection pool
             cls._pool = pool.SimpleConnectionPool(
                 minconn=1,
-                maxconn=config.pool_size + config.max_overflow,
+                maxconn=db_config.pool_size + db_config.max_overflow,
                 dsn=db_url
             )
 
             logger.info(
                 f"Database connection pool initialized: "
-                f"min=1, max={config.pool_size + config.max_overflow}"
+                f"min=1, max={db_config.pool_size + db_config.max_overflow}"
             )
 
         except psycopg2.Error as e:
