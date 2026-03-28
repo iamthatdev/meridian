@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""
+Training script for fine-tuning SAT item generation models.
+
+Usage:
+    # Train Reading & Writing model
+    python scripts/train_model.py --section reading_writing
+
+    # Train Math model
+    python scripts/train_model.py --section math
+
+    # Resume from checkpoint
+    python scripts/train_model.py --section reading_writing --checkpoint checkpoints/reading_writing/latest
+"""
+
+import argparse
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+from loguru import logger
+
+try:
+    import torch
+    from torch.utils.data import DataLoader
+    from transformers import get_linear_schedule_with_warmup
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    logger.error("PyTorch/transformers not available. Training will not work.")
+
+from src.config import load_config
+from src.training.dataset import SFTDataset, create_dataloader
+from src.training.models import (
+    load_model_for_training,
+    save_model,
+    print_model_summary
+)
+
+
+def train(
+    section: str,
+    config = None,
+    checkpoint_dir: str = None,
+    resume_from: str = None
+):
+    """
+    Train a model on the specified section.
+
+    Args:
+        section: Model section ('reading_writing' or 'math')
+        config: Config object
+        checkpoint_dir: Directory to save checkpoints
+        resume_from: Path to checkpoint to resume from
+    """
+    if not TRANSFORMERS_AVAILABLE:
+        logger.error("Cannot train: PyTorch/transformers not available")
+        sys.exit(1)
+
+    if config is None:
+        config = load_config()
+
+    # Normalize section name
+    if section in ["rw", "readingwriting"]:
+        section = "reading_writing"
+
+    logger.info("=" * 70)
+    logger.info(f"Training {section} model")
+    logger.info("=" * 70)
+
+    # Setup checkpoint directory
+    if checkpoint_dir is None:
+        checkpoint_dir = Path(config.paths.checkpoint_dir) / section
+    else:
+        checkpoint_dir = Path(checkpoint_dir)
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create run directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = checkpoint_dir / timestamp
+    run_dir.mkdir(exist_ok=True)
+
+    logger.info(f"Run directory: {run_dir}")
+
+    # Load model and tokenizer
+    logger.info("Loading model and tokenizer...")
+    model, tokenizer = load_model_for_training(
+        section=section,
+        config=config,
+        use_4bit=True
+    )
+
+    if model is None or tokenizer is None:
+        logger.error("Failed to load model or tokenizer")
+        sys.exit(1)
+
+    print_model_summary(model)
+
+    # Load datasets
+    logger.info("Loading datasets...")
+
+    train_file = Path(config.paths.data_dir) / "splits" / f"{section.replace('_', '')}_train.jsonl"
+    val_file = Path(config.paths.data_dir) / "splits" / f"{section.replace('_', '')}_val.jsonl"
+
+    if not train_file.exists():
+        logger.error(f"Training file not found: {train_file}")
+        logger.info("Expected file structure:")
+        logger.info(f"  {train_file}")
+        sys.exit(1)
+
+    if not val_file.exists():
+        logger.warning(f"Validation file not found: {val_file}")
+        logger.info("Continuing without validation set...")
+        val_file = None
+
+    # Create datasets
+    max_seq_length = config.training.max_seq_length_rw if section == "reading_writing" else config.training.max_seq_length_math
+
+    train_dataset = SFTDataset(
+        data_path=str(train_file),
+        tokenizer=tokenizer,
+        max_seq_length=max_seq_length,
+        section=section
+    )
+
+    logger.info(f"Training examples: {len(train_dataset)}")
+
+    if val_file:
+        val_dataset = SFTDataset(
+            data_path=str(val_file),
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+            section=section
+        )
+        logger.info(f"Validation examples: {len(val_dataset)}")
+    else:
+        val_dataset = None
+
+    # Create dataloaders
+    train_dataloader = create_dataloader(
+        data_path=str(train_file),
+        tokenizer=tokenizer,
+        batch_size=config.training.batch_size,
+        max_seq_length=max_seq_length,
+        section=section,
+        shuffle=True
+    )
+
+    if val_dataset:
+        val_dataloader = create_dataloader(
+            data_path=str(val_file),
+            tokenizer=tokenizer,
+            batch_size=config.training.batch_size,
+            max_seq_length=max_seq_length,
+            section=section,
+            shuffle=False
+        )
+    else:
+        val_dataloader = None
+
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.training.learning_rate,
+        weight_decay=0.01
+    )
+
+    # Setup learning rate scheduler
+    num_training_steps = len(train_dataloader) * config.training.num_epochs
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=config.training.warmup_steps,
+        num_training_steps=num_training_steps
+    )
+
+    logger.info(f"Training steps per epoch: {len(train_dataloader)}")
+    logger.info(f"Total epochs: {config.training.num_epochs}")
+    logger.info(f"Total training steps: {num_training_steps}")
+
+    # Training loop
+    logger.info("=" * 70)
+    logger.info("Starting training...")
+    logger.info("=" * 70)
+
+    global_step = 0
+    best_val_loss = float("inf")
+
+    for epoch in range(config.training.num_epochs):
+        logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
+
+        # Training
+        model.train()
+        total_train_loss = 0
+
+        for step, batch in enumerate(train_dataloader):
+            # Move batch to device
+            input_ids = batch["input_ids"].to(model.device)
+            attention_mask = batch["attention_mask"].to(model.device)
+            labels = batch["labels"].to(model.device)
+
+            # Forward pass
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+
+            loss = outputs.loss
+            total_train_loss += loss.item()
+
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            global_step += 1
+
+            # Log progress
+            if step % 10 == 0:
+                logger.info(
+                    f"Epoch {epoch + 1} | Step {step}/{len(train_dataloader)} | "
+                    f"Loss: {loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.2e}"
+                )
+
+            # Save checkpoint periodically
+            if global_step % 100 == 0:
+                checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
+                save_model(model, tokenizer, str(checkpoint_path))
+                logger.info(f"Saved checkpoint: {checkpoint_path}")
+
+        avg_train_loss = total_train_loss / len(train_dataloader)
+        logger.info(f"Average training loss: {avg_train_loss:.4f}")
+
+        # Validation
+        if val_dataloader:
+            logger.info("Running validation...")
+            model.eval()
+            total_val_loss = 0
+
+            with torch.no_grad():
+                for batch in val_dataloader:
+                    input_ids = batch["input_ids"].to(model.device)
+                    attention_mask = batch["attention_mask"].to(model.device)
+                    labels = batch["labels"].to(model.device)
+
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels
+                    )
+
+                    total_val_loss += outputs.loss.item()
+
+            avg_val_loss = total_val_loss / len(val_dataloader)
+            logger.info(f"Average validation loss: {avg_val_loss:.4f}")
+
+            # Save best checkpoint
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_checkpoint = run_dir / "best"
+                save_model(model, tokenizer, str(best_checkpoint))
+                logger.info(f"Saved best checkpoint (val_loss: {avg_val_loss:.4f})")
+
+        # Save epoch checkpoint
+        epoch_checkpoint = run_dir / f"epoch-{epoch + 1}"
+        save_model(model, tokenizer, str(epoch_checkpoint))
+        logger.info(f"Saved epoch checkpoint: {epoch_checkpoint}")
+
+    # Save final checkpoint
+    final_checkpoint = run_dir / "final"
+    save_model(model, tokenizer, str(final_checkpoint))
+    logger.info(f"Saved final checkpoint: {final_checkpoint}")
+
+    # Save training metadata
+    metadata = {
+        "section": section,
+        "timestamp": timestamp,
+        "epochs_completed": config.training.num_epochs,
+        "final_train_loss": avg_train_loss,
+        "best_val_loss": best_val_loss if val_dataloader else None,
+        "config": {
+            "learning_rate": config.training.learning_rate,
+            "batch_size": config.training.batch_size,
+            "num_epochs": config.training.num_epochs,
+            "max_seq_length": max_seq_length,
+            "lora_r": config.lora.r,
+            "lora_alpha": config.lora.alpha
+        }
+    }
+
+    import json
+    with open(run_dir / "training_metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info("=" * 70)
+    logger.info("Training complete!")
+    logger.info(f"Results saved to: {run_dir}")
+    logger.info("=" * 70)
+
+
+def main():
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Train SAT item generation models"
+    )
+    parser.add_argument(
+        "--section",
+        required=True,
+        choices=["reading_writing", "math", "rw", "readingwriting"],
+        help="Model section to train"
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        help="Directory to save checkpoints (default: checkpoints/<section>/)"
+    )
+    parser.add_argument(
+        "--resume-from",
+        help="Path to checkpoint to resume from"
+    )
+    parser.add_argument(
+        "--env",
+        default=os.getenv("APP_ENV", "local"),
+        help="Environment (local or production)"
+    )
+
+    args = parser.parse_args()
+
+    # Set environment
+    os.environ["APP_ENV"] = args.env
+
+    # Normalize section name
+    section = args.section
+    if section in ["rw", "readingwriting"]:
+        section = "reading_writing"
+
+    # Train
+    train(
+        section=section,
+        checkpoint_dir=args.checkpoint_dir,
+        resume_from=args.resume_from
+    )
+
+
+if __name__ == "__main__":
+    main()
