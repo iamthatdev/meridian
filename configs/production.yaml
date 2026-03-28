@@ -1,0 +1,33 @@
+app_env: production
+log_level: INFO
+
+database:
+  url: postgresql://user:password@prod-db:5432/meridian
+  pool_size: 10
+  max_overflow: 20
+
+models:
+  rw_model_id: Qwen/Qwen2.5-7B-Instruct
+  math_model_id: microsoft/phi-4
+  fallback_model_id: meta-llama/Llama-3.1-8B-Instruct
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+
+training:
+  learning_rate: 2e-5
+  batch_size: 8
+  gradient_accumulation_steps: 8
+  num_epochs: 3
+  max_seq_length_rw: 4096
+  max_seq_length_math: 2048
+
+paths:
+  data_dir: /data
+  training_dir: /data/training
+  generated_dir: /data/generated
+  validated_dir: /data/validated
+  checkpoint_dir: /checkpoints
+  log_dir: /outputs/logs
