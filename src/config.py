@@ -33,6 +33,14 @@ class LoRAConfig:
             ]
 
 @dataclass
+class QuantizationConfig:
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_use_double_quant: bool = True
+    gradient_checkpointing: bool = True
+
+@dataclass
 class TrainingConfig:
     learning_rate: float = 2e-5
     batch_size: int = 8
@@ -63,6 +71,7 @@ class Config:
     database: DatabaseConfig
     models: ModelConfig
     lora: LoRAConfig
+    quantization: QuantizationConfig
     training: TrainingConfig
     paths: PathConfig
     log_level: str = "INFO"
@@ -78,6 +87,7 @@ class Config:
             database=DatabaseConfig(**config_dict["database"]),
             models=ModelConfig(**config_dict["models"]),
             lora=LoRAConfig(**config_dict.get("lora", {})),
+            quantization=QuantizationConfig(**config_dict.get("quantization", {})),
             training=TrainingConfig(**config_dict.get("training", {})),
             paths=PathConfig(**{k: Path(v) for k, v in config_dict.get("paths", {}).items()}),
             log_level=config_dict.get("log_level", "INFO")

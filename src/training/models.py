@@ -283,9 +283,14 @@ def print_model_summary(model):
     total_params = model.num_parameters()
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    logger.info(f"Total parameters: {total_params / 1e9:.2f}B")
-    logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
-    logger.info(f"Trainable %: {trainable_params / total_params * 100:.2f}%")
+    try:
+        logger.info(f"Total parameters: {total_params / 1e9:.2f}B")
+        logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
+        logger.info(f"Trainable %: {trainable_params / total_params * 100:.2f}%")
+    except (TypeError, ValueError):
+        # In tests, parameters might be MagicMock objects
+        logger.info(f"Total parameters: {total_params}")
+        logger.info(f"Trainable parameters: {trainable_params}")
 
     if hasattr(model, "hf_device_map"):
         logger.info(f"Device map: {model.hf_device_map}")

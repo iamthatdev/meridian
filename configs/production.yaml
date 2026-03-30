@@ -16,6 +16,13 @@ lora:
   alpha: 64
   dropout: 0.05
 
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+  gradient_checkpointing: true
+
 training:
   learning_rate: 2e-5
   batch_size: 8
