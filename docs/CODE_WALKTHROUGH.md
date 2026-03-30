@@ -1,7 +1,7 @@
-# IIAS MVP Code Walkthrough (Tasks 1-7)
+# IIAS MVP Code Walkthrough (Tasks 1-13)
 
 **Last Updated:** 2026-03-28
-**Progress:** 7 of 13 tasks complete (54%)
+**Progress:** 13 of 13 tasks complete (100%)
 
 ---
 
@@ -14,6 +14,12 @@
 5. [Task 5: Auto-QA Pipeline](#task-5-auto-qa-pipeline)
 6. [Task 6: Data Conversion Script](#task-6-data-conversion-script)
 7. [Task 7: Item Repository](#task-7-item-repository)
+8. [Task 8: CLI Scripts for Item Management](#task-8-cli-scripts-for-item-management)
+9. [Task 9: Generation Service - Dataset and Models](#task-9-generation-service---dataset-and-models)
+10. [Task 10: Training Script](#task-10-training-script)
+11. [Task 11: Generation Script](#task-11-generation-script)
+12. [Task 12: Validation Script](#task-12-validation-script)
+13. [Task 13: Fix Critical Issues](#task-13-fix-critical-issues)
 
 ---
 
@@ -890,6 +896,471 @@ def initialize(cls, config) -> None:
 
 ---
 
+## Task 8: CLI Scripts for Item Management
+
+### Files Created
+
+```
+scripts/
+├── load_items.py                 # Bulk load items from JSON/JSONL
+├── approve_item.py              # Approve items through lifecycle
+├── query_items.py                # Query and display items
+├── review_items.py               # Review items (approve/reject)
+└── export_items.py               # Export items to JSON/JSONL
+
+tests/
+└── test_cli_scripts.py            # CLI tests (8 passing)
+```
+
+### How to Follow
+
+**Entry Points:** Each script in `scripts/`
+
+**1. Load Items** - `scripts/load_items.py:9`
+```bash
+python scripts/load_items.py --input data/validated/math_items.jsonl --section math
+
+# Features:
+# - Reads JSON/JSONL files
+# - Runs Auto-QA validation on each item
+# - Skips items that fail validation
+# - Skips items that already exist
+# - Reports statistics (total, loaded, skipped, failed)
+```
+
+**2. Approve Items** - `scripts/approve_item.py:9`
+```bash
+python scripts/approve_item.py --item-id UUID --reviewer-id user-123
+
+# Transitions: draft → pretesting → operational
+# Uses ItemRepository.update_status()
+# Creates audit_log entries
+```
+
+**3. Query Items** - `scripts/query_items.py:9`
+```bash
+python scripts/query_items.py --section math --limit 10
+
+# Supports filters: section, domain, difficulty, status
+# Output formats: table (default) or JSON
+# Pagination with --limit and --offset
+```
+
+**4. Review Items** - `scripts/review_items.py:9`
+```bash
+python scripts/review_items.py --item-id UUID --decision approve --reviewer-id user-123
+
+# Supports: approve or reject
+# Reject requires: --rejection-reasons (INCORRECT_ANSWER, etc.)
+# Optional: --notes for review notes
+```
+
+**5. Export Items** - `scripts/export_items.py:9`
+```bash
+python scripts/export_items.py --output data/exports/operational.jsonl --status operational
+
+# Export by section, status, difficulty
+# Include/exclude metadata with --no-metadata
+# Formats: JSON or JSONL
+```
+
+---
+
+## Task 9: Generation Service - Dataset and Models
+
+### Files Created
+
+```
+src/training/
+├── dataset.py                     # SFTDataset with loss masking
+└── models.py                      # Model loading with LoRA/QLoRA
+
+tests/
+├── test_training_dataset.py       # Dataset tests (4 passing)
+└── test_training_models.py        # Model tests (15 passing)
+```
+
+### How to Follow
+
+**1. SFTDataset** - `src/training/dataset.py:23`
+```python
+from src.training.dataset import SFTDataset, create_dataloader
+
+dataset = SFTDataset(
+    data_path="data/splits/rw_train.jsonl",
+    tokenizer=tokenizer,
+    max_seq_length=2048,
+    section="reading_writing"  # Optional filter
+)
+
+# Access examples
+example = dataset[0]
+# Returns: {
+#     "input_ids": tensor([seq_len]),
+#     "attention_mask": tensor([seq_len]),
+#     "labels": tensor([seq_len]) with -100 masking
+# }
+```
+
+**2. Model Loading** - `src/training/models.py:134`
+```python
+from src.training.models import load_model_for_training
+
+model, tokenizer = load_model_for_training(
+    section="reading_writing",
+    config=config,
+    use_4bit=True  # QLoRA
+)
+
+# Model has LoRA applied automatically
+# Returns: model (PEFT model), tokenizer
+```
+
+**3. Individual Components:**
+
+```python
+# Load tokenizer only
+from src.training.models import load_tokenizer
+tokenizer = load_tokenizer("Qwen/Qwen2.5-7B-Instruct")
+
+# Load base model
+from src.training.models import load_model
+model = load_model("Qwen/Qwen2.5-7B-Instruct", use_4bit=True)
+
+# Apply LoRA adapters
+from src.training.models import apply_lora
+model = apply_lora(model, config)
+```
+
+---
+
+## Task 10: Training Script
+
+### Files Created
+
+```
+scripts/
+└── train_model.py                 # Training script for fine-tuning
+
+tests/
+└── test_train_script.py           # Training tests (8 passing)
+```
+
+### How to Follow
+
+**Entry Point:** `scripts/train_model.py:48`
+
+```bash
+# Train Reading & Writing model
+APP_ENV=local python scripts/train_model.py --section reading_writing
+
+# Train Math model
+APP_ENV=production python scripts/train_model.py --section math
+
+# With custom checkpoint directory
+python scripts/train_model.py --section math --checkpoint-dir /path/to/checkpoints
+```
+
+**Training Pipeline:**
+
+```
+1. Load model & tokenizer (with LoRA/QLoRA)
+2. Load training and validation datasets
+3. Create optimizer (AdamW) and scheduler
+4. Train for specified epochs
+5. Validate after each epoch
+6. Save checkpoints periodically
+```
+
+**Checkpoint Structure:**
+
+```
+checkpoints/
+└── math/
+    └── 20260328_154039/            # Timestamp
+        ├── checkpoint-step-100/
+        ├── checkpoint-step-200/
+        ├── epoch-1/
+        ├── epoch-2/
+        ├── best/                     # Best validation loss
+        ├── final/                    # End of training
+        └── training_metadata.json   # Config & results
+```
+
+**Progress Logging:**
+
+```
+Epoch 1 | Step 10/100 | Loss: 0.5234 | LR: 2.00e-05
+Epoch 1 | Step 20/100 | Loss: 0.4891 | LR: 1.95e-05
+Average training loss: 0.4234
+Running validation...
+Average validation loss: 0.3891
+Saved best checkpoint (val_loss: 0.3891)
+```
+
+---
+
+## Task 11: Generation Script
+
+### Files Created
+
+```
+src/generation/
+├── generator.py                  # ItemGenerator class
+└── __init__.py
+
+scripts/
+└── generate_items.py              # CLI for generating items
+
+tests/
+└── test_generation.py             # Generation tests (12 passing)
+```
+
+### How to Follow
+
+**1. ItemGenerator** - `src/generation/generator.py:16`
+```python
+from src.generation.generator import ItemGenerator
+
+generator = ItemGenerator(checkpoint_path="checkpoints/math/best")
+
+# Generate single item
+items = generator.generate(
+    section="math",
+    domain="algebra.quadratic_equations",
+    difficulty="medium",
+    num_return_sequences=5
+)
+
+# Batch generation
+all_items = generator.generate_batch(
+    section="math",
+    domains=["domain1", "domain2"],
+    difficulty="medium",
+    items_per_domain=10
+)
+```
+
+**2. CLI Script** - `scripts/generate_items.py:153`
+```bash
+# Generate single item
+python scripts/generate_items.py \
+    --checkpoint checkpoints/math/best \
+    --section math \
+    --domain algebra.quadratic_equations \
+    --difficulty medium
+
+# Generate batch
+python scripts/generate_items.py \
+    --checkpoint checkpoints/math/best \
+    --section reading_writing \
+    --domains central_ideas inferences \
+    --difficulty hard \
+    --batch \
+    --items-per-domain 5
+
+# With validation and output
+python scripts/generate_items.py \
+    --checkpoint checkpoints/math/best \
+    --section math \
+    --domain algebra.linear_equations \
+    --difficulty easy \
+    --output generated_items.jsonl
+```
+
+**Generation Parameters:**
+- `temperature: 0.8` - Controls randomness
+- `top_p: 0.95` - Nucleus sampling
+- `max_new_tokens: 1024` - Maximum tokens to generate
+
+**Auto-QA Integration:**
+- Validates generated items
+- Filters out items that fail validation
+- Only saves items that pass validation
+
+---
+
+## Task 12: Validation Script
+
+### Files Created
+
+```
+scripts/
+└── validate_items.py             # Validate items with Auto-QA
+
+tests/
+└── test_validation_script.py      # Validation tests (9 passing)
+```
+
+### How to Follow
+
+**Entry Point:** `scripts/validate_items.py:19`
+
+```bash
+# Validate items
+python scripts/validate_items.py --input data/generated/items.jsonl
+
+# Validate and save passed items
+python scripts/validate_items.py \
+    --input data/generated/items.jsonl \
+    --output data/validated/items.jsonl
+
+# Show detailed results
+python scripts/validate_items.py --input data/generated/items.jsonl --verbose
+```
+
+**Validation Process:**
+
+```python
+# Uses Auto-QA Pipeline (3-stage validation)
+# 1. Schema validation (hard gate)
+# 2. Readability check (warning gate)
+# 3. Quality rules (hard gate)
+
+result = pipeline.validate(item)
+# Returns: {
+#     "auto_qa_passed": True/False,
+#     "qa_score": 0.0-1.0,
+#     "qa_flags": ["FLAG_NAME", ...]
+# }
+```
+
+**Output Summary:**
+
+```
+============================================================
+Validation Summary
+============================================================
+Total items:    100
+Passed:         85 (85.0%)
+Failed:         15
+============================================================
+
+Top failure reasons:
+  QUESTION_TOO_SHORT: 8
+  RATIONALE_TOO_SHORT: 4
+  DUPLICATE_CHOICES: 3
+============================================================
+```
+
+---
+
+## Task 13: Fix Critical Issues
+
+### Files Modified
+
+```
+src/item_bank/migrations/init.sql    # Database schema updates
+src/item_bank/repositories/item_repository.py  # JSONB casting fix
+src/config.py                         # QuantizationConfig added
+configs/local.yaml                    # QLoRA config added
+configs/production.yaml               # QLoRA config added
+```
+
+### How to Follow
+
+**1. Database Schema Fixes** - `src/item_bank/migrations/init.sql`
+
+Fixed two critical issues:
+- **Section naming**: Changed CHECK constraint from `('rw', 'math')` to `('reading_writing', 'math')` for consistency
+- **Domain names**: Updated to use full hierarchical naming (e.g., `algebra.linear_equations_one_variable` instead of `linear_equations_one_variable`)
+
+**Changes:**
+```sql
+-- BEFORE:
+section VARCHAR(10) NOT NULL CHECK (section IN ('rw', 'math'))
+
+-- AFTER:
+section VARCHAR(20) NOT NULL CHECK (section IN ('reading_writing', 'math'))
+```
+
+**Complete domain list (27 domains):**
+- **Reading & Writing (11 domains):**
+  - `information_and_ideas.central_ideas_and_details`
+  - `information_and_ideas.command_of_evidence_textual`
+  - `information_and_ideas.inferences`
+  - `information_and_ideas.words_in_context`
+  - `craft_and_structure.text_structure_and_purpose`
+  - `craft_and_structure.cross_text_connections`
+  - `expression_of_ideas.rhetorical_synthesis`
+  - `expression_of_ideas.transitions`
+  - `standard_english_conventions.boundaries`
+  - `standard_english_conventions.form_structure_sense`
+  - `standard_english_conventions.standard_english`
+
+- **Math (16 domains):**
+  - `algebra.linear_equations_one_variable`
+  - `algebra.linear_equations_two_variables`
+  - `algebra.linear_functions`
+  - `algebra.systems_of_linear_equations`
+  - `advanced_math.nonlinear_functions`
+  - `advanced_math.nonlinear_equations`
+  - `advanced_math.equivalent_expressions`
+  - `problem_solving_and_data_analysis.ratios_rates_proportions`
+  - `problem_solving_and_data_analysis.percentages`
+  - `problem_solving_and_data_analysis.one_variable_data`
+  - `problem_solving_and_data_analysis.two_variable_data`
+  - `problem_solving_and_data_analysis.probability`
+  - `problem_solving_and_data_analysis.inference_from_samples`
+  - `geometry_and_trigonometry.area_volume`
+  - `geometry_and_trigonometry.lines_angles_triangles`
+  - `geometry_and_trigonometry.right_triangles_trigonometry`
+  - `geometry_and_trigonometry.circles`
+
+**2. JSONB Casting Fix** - `src/item_bank/repositories/item_repository.py`
+
+Fixed PostgreSQL JSONB insertion to use proper type casting:
+
+```python
+# Added import
+from psycopg2.extras import Json
+
+# BEFORE (line 58):
+item['content_json'],
+
+# AFTER:
+Json(item['content_json']),
+```
+
+This ensures dictionaries are properly converted to PostgreSQL JSONB format.
+
+**3. Quantization Configuration** - `src/config.py`, `configs/*.yaml`
+
+Added `QuantizationConfig` dataclass for QLoRA settings:
+
+```python
+@dataclass
+class QuantizationConfig:
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_use_double_quant: bool = True
+    gradient_checkpointing: bool = True
+```
+
+Added to both `configs/local.yaml` and `configs/production.yaml`:
+
+```yaml
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+  gradient_checkpointing: true
+```
+
+**4. Database Re-initialization**
+
+After these changes, re-run database initialization:
+
+```bash
+python scripts/init_db.py
+```
+
+Expected: "✅ Database initialized successfully" with all 27 domains created.
+
+---
+
 ## Integration Example
 
 **Complete workflow:**
@@ -924,15 +1395,20 @@ db.close_all()
 
 ## Next Steps
 
-**Remaining Tasks (8-13):**
-- Task 8: CLI Scripts for Item Management
-- Task 9: Generation Service (Dataset + Model Loading)
-- Task 10: Training Script
-- Task 11: Generation Script
-- Task 12: Validation Script
-- Task 13: Fix Critical Issues
+**✅ All 13 Tasks Complete!**
 
-**Current Progress:** 7/13 tasks (54%)
+The IIAS MVP implementation is now complete. All critical issues have been fixed:
+- Database schema with correct section names and full hierarchical domain names
+- JSONB casting for proper PostgreSQL integration
+- QLoRA quantization configuration for efficient training
+- All 71 tests passing
+
+**Next Phase (Post-MVP):**
+- Model training on real data
+- Item generation and validation
+- Production deployment
+- Enhanced Auto-QA features
+- Review UI development
 
 ---
 

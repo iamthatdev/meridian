@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS domains (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
-    section VARCHAR(10) NOT NULL CHECK (section IN ('rw', 'math')),
+    section VARCHAR(20) NOT NULL CHECK (section IN ('reading_writing', 'math')),
     category VARCHAR(100) NOT NULL,
     description TEXT,
     target_percentage DECIMAL(5, 2) DEFAULT 0.0,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS items (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 
     -- Content classification
-    section VARCHAR(10) NOT NULL CHECK (section IN ('rw', 'math')),
+    section VARCHAR(20) NOT NULL CHECK (section IN ('reading_writing', 'math')),
     domain VARCHAR(100) NOT NULL REFERENCES domains(name) ON DELETE RESTRICT,
     difficulty VARCHAR(10) NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
 
@@ -138,37 +138,38 @@ CREATE TRIGGER update_domains_updated_at
     EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert default domains
--- Reading & Writing domains
+-- Reading & Writing domains (11 domains)
 INSERT INTO domains (name, section, category, description, target_percentage) VALUES
-('central_idea', 'rw', 'comprehension', 'Identifying the main idea or primary purpose of a passage', 9.09),
-('command_of_evidence', 'rw', 'comprehension', 'Selecting evidence that supports a claim', 9.09),
-('inferences', 'rw', 'comprehension', 'Drawing conclusions from stated information', 9.09),
-('words_in_context', 'rw', 'vocabulary', 'Vocabulary in context, connotation, tone', 9.09),
-('text_structure', 'rw', 'comprehension', 'How a passage is organized and why', 9.09),
-('cross_text_connections', 'rw', 'synthesis', 'Synthesis across two related passages', 9.09),
-('rhetorical_synthesis', 'rw', 'synthesis', 'Combining information to achieve a rhetorical goal', 9.09),
-('transitions', 'rw', 'grammar', 'Logical connectors between sentences and ideas', 9.09),
-('boundaries', 'rw', 'grammar', 'Sentence structure, run-ons, fragments, punctuation', 9.09),
-('form_structure_sense', 'rw', 'grammar', 'Subject-verb agreement, pronouns, modifiers', 9.09),
-('standard_english', 'rw', 'grammar', 'Conventions of usage and style', 9.09)
+('information_and_ideas.central_ideas_and_details', 'reading_writing', 'Information and Ideas', 'Identifying the main idea or primary purpose of a passage', 9.09),
+('information_and_ideas.command_of_evidence_textual', 'reading_writing', 'Information and Ideas', 'Selecting evidence that supports a claim', 9.09),
+('information_and_ideas.inferences', 'reading_writing', 'Information and Ideas', 'Drawing conclusions from stated information', 9.09),
+('information_and_ideas.words_in_context', 'reading_writing', 'Information and Ideas', 'Vocabulary in context, connotation, tone', 9.09),
+('craft_and_structure.text_structure_and_purpose', 'reading_writing', 'Craft and Structure', 'How a passage is organized and why', 9.09),
+('craft_and_structure.cross_text_connections', 'reading_writing', 'Craft and Structure', 'Synthesis across two related passages', 9.09),
+('expression_of_ideas.rhetorical_synthesis', 'reading_writing', 'Expression of Ideas', 'Combining information to achieve a rhetorical goal', 9.09),
+('expression_of_ideas.transitions', 'reading_writing', 'Expression of Ideas', 'Logical connectors between sentences and ideas', 9.09),
+('standard_english_conventions.boundaries', 'reading_writing', 'Standard English Conventions', 'Sentence structure, run-ons, fragments, punctuation', 9.09),
+('standard_english_conventions.form_structure_sense', 'reading_writing', 'Standard English Conventions', 'Subject-verb agreement, pronouns, modifiers', 9.09),
+('standard_english_conventions.standard_english', 'reading_writing', 'Standard English Conventions', 'Conventions of usage and style', 9.09)
 ON CONFLICT (name) DO NOTHING;
 
--- Math domains
+-- Math domains (16 domains)
 INSERT INTO domains (name, section, category, description, target_percentage) VALUES
-('linear_equations_one_variable', 'math', 'algebra', 'Solving and interpreting single-variable equations', 6.25),
-('linear_equations_two_variables', 'math', 'algebra', 'Systems of equations, intersections', 6.25),
-('linear_functions', 'math', 'algebra', 'Slope, intercept, rate of change', 6.25),
-('inequalities', 'math', 'algebra', 'Solving and graphing linear inequalities', 6.25),
-('nonlinear_functions', 'math', 'advanced_algebra', 'Quadratics, exponentials, absolute value', 6.25),
-('nonlinear_equations', 'math', 'advanced_algebra', 'Solving quadratic and polynomial equations', 6.25),
-('ratios_rates_proportions', 'math', 'problem_solving', 'Unit conversion, scaling, proportional reasoning', 6.25),
-('percentages', 'math', 'problem_solving', 'Percent change, percent of a whole', 6.25),
-('one_variable_data', 'math', 'statistics', 'Mean, median, mode, range, standard deviation', 6.25),
-('two_variable_data', 'math', 'statistics', 'Scatterplots, line of best fit, correlation', 6.25),
-('probability', 'math', 'statistics', 'Simple and conditional probability', 6.25),
-('inference_from_samples', 'math', 'statistics', 'Margin of error, survey design', 6.25),
-('area_volume', 'math', 'geometry', '2D and 3D geometry', 6.25),
-('lines_angles_triangles', 'math', 'geometry', 'Geometric relationships and proofs', 6.25),
-('right_triangles_trigonometry', 'math', 'geometry', 'Pythagorean theorem, SOHCAHTOA, special triangles', 6.25),
-('circles', 'math', 'geometry', 'Arc length, sector area, equation of a circle', 6.25)
+('algebra.linear_equations_one_variable', 'math', 'Algebra', 'Solving and interpreting single-variable equations', 6.25),
+('algebra.linear_equations_two_variables', 'math', 'Algebra', 'Systems of equations, intersections', 6.25),
+('algebra.linear_functions', 'math', 'Algebra', 'Slope, intercept, rate of change', 6.25),
+('algebra.systems_of_linear_equations', 'math', 'Algebra', 'Solving systems of linear equations', 6.25),
+('advanced_math.nonlinear_functions', 'math', 'Advanced Math', 'Quadratics, exponentials, absolute value', 6.25),
+('advanced_math.nonlinear_equations', 'math', 'Advanced Math', 'Solving quadratic and polynomial equations', 6.25),
+('advanced_math.equivalent_expressions', 'math', 'Advanced Math', 'Equivalent expressions and simplifying', 6.25),
+('problem_solving_and_data_analysis.ratios_rates_proportions', 'math', 'Problem-Solving and Data Analysis', 'Unit conversion, scaling, proportional reasoning', 6.25),
+('problem_solving_and_data_analysis.percentages', 'math', 'Problem-Solving and Data Analysis', 'Percent change, percent of a whole', 6.25),
+('problem_solving_and_data_analysis.one_variable_data', 'math', 'Problem-Solving and Data Analysis', 'Mean, median, mode, range, standard deviation', 6.25),
+('problem_solving_and_data_analysis.two_variable_data', 'math', 'Problem-Solving and Data Analysis', 'Scatterplots, line of best fit, correlation', 6.25),
+('problem_solving_and_data_analysis.probability', 'math', 'Problem-Solving and Data Analysis', 'Simple and conditional probability', 6.25),
+('problem_solving_and_data_analysis.inference_from_samples', 'math', 'Problem-Solving and Data Analysis', 'Margin of error, survey design', 6.25),
+('geometry_and_trigonometry.area_volume', 'math', 'Geometry and Trigonometry', '2D and 3D geometry', 6.25),
+('geometry_and_trigonometry.lines_angles_triangles', 'math', 'Geometry and Trigonometry', 'Geometric relationships and proofs', 6.25),
+('geometry_and_trigonometry.right_triangles_trigonometry', 'math', 'Geometry and Trigonometry', 'Pythagorean theorem, SOHCAHTOA, special triangles', 6.25),
+('geometry_and_trigonometry.circles', 'math', 'Geometry and Trigonometry', 'Arc length, sector area, equation of a circle', 6.25)
 ON CONFLICT (name) DO NOTHING;

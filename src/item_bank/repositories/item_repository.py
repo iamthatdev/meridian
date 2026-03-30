@@ -5,6 +5,7 @@ from datetime import datetime
 from loguru import logger
 from src.item_bank.database import db
 from typing import Dict, Any, List, Optional
+from psycopg2.extras import Json
 
 
 class ItemRepository:
@@ -55,7 +56,7 @@ class ItemRepository:
             0.0,  # irt_b (difficulty)
             0.25,  # irt_c (guessing)
             'seeded',  # irt_source
-            item['content_json'],
+            Json(item['content_json']),
             qa_result.get('auto_qa_passed', False),
             qa_result.get('qa_score', 0.0),
             qa_result.get('qa_flags', []),

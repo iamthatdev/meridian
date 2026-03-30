@@ -29,6 +29,9 @@ ENV/
 .env
 
 # Data
+data/
+data/training/
+data/splits/
 data/raw/
 data/generated/
 data/validated/
@@ -48,4 +51,3 @@ checkpoints/
 # OS
 .DS_Store
 Thumbs.db
-data/
