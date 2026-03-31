@@ -48,3 +48,4 @@ checkpoints/
 # OS
 .DS_Store
 Thumbs.db
+data/
