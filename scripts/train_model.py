@@ -186,12 +186,17 @@ def train(
     global_step = 0
     best_val_loss = float("inf")
 
+    # Setup gradient accumulation
+    gradient_accumulation_steps = config.training.gradient_accumulation_steps
+    logger.info(f"Using gradient accumulation: {gradient_accumulation_steps} steps")
+
     for epoch in range(config.training.num_epochs):
         logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
 
         # Training
         model.train()
         total_train_loss = 0
+        accumulated_loss = 0
 
         for step, batch in enumerate(train_dataloader):
             # Move batch to device
@@ -206,23 +211,35 @@ def train(
                 labels=labels
             )
 
-            loss = outputs.loss
-            total_train_loss += loss.item()
+            # Scale loss for gradient accumulation
+            loss = outputs.loss / gradient_accumulation_steps
+            total_train_loss += loss.item() * gradient_accumulation_steps
+            accumulated_loss += loss.item() * gradient_accumulation_steps
 
-            # Backward pass
-            optimizer.zero_grad()
+            # Backward pass (accumulate gradients)
             loss.backward()
-            optimizer.step()
-            scheduler.step()
 
-            global_step += 1
+            # Only step optimizer after accumulating enough gradients
+            if (step + 1) % gradient_accumulation_steps == 0:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
 
-            # Log progress
-            if step % 10 == 0:
-                logger.info(
-                    f"Epoch {epoch + 1} | Step {step}/{len(train_dataloader)} | "
-                    f"Loss: {loss.item():.4f} | LR: {scheduler.get_last_lr()[0]:.2e}"
-                )
+                # Log progress
+                if global_step % 10 == 0:
+                    logger.info(
+                        f"Epoch {epoch + 1} | Step {global_step} | "
+                        f"Loss: {accumulated_loss / gradient_accumulation_steps:.4f} | "
+                        f"LR: {scheduler.get_last_lr()[0]:.2e}"
+                    )
+                accumulated_loss = 0
+
+                # Save checkpoint periodically
+                if global_step % 100 == 0:
+                    checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
+                    save_model(model, tokenizer, str(checkpoint_path))
+                    logger.info(f"Saved checkpoint: {checkpoint_path}")
 
             # Save checkpoint periodically
             if global_step % 100 == 0:
