@@ -34,6 +34,7 @@ from src.training.dataset import SFTDataset, create_dataloader
 from src.training.models import (
     load_model_for_training,
     save_model,
+    load_checkpoint,
     print_model_summary
 )
 
@@ -96,6 +97,24 @@ def train(
         sys.exit(1)
 
     print_model_summary(model)
+
+    # Load checkpoint if resuming
+    start_epoch = 0
+    global_step = 0
+    best_val_loss = float("inf")
+
+    if resume_from:
+        logger.info(f"Resuming from checkpoint: {resume_from}")
+        training_state, model, tokenizer = load_checkpoint(
+            model, tokenizer, resume_from
+        )
+        if training_state:
+            start_epoch = training_state.get('epoch', 0)
+            global_step = training_state.get('global_step', 0)
+            best_val_loss = training_state.get('best_val_loss', float("inf"))
+            logger.info(f"✓ Resumed from epoch {start_epoch}, step {global_step}")
+        else:
+            logger.warning("Failed to load training state, starting from scratch")
 
     # Load datasets
     logger.info("Loading datasets...")
@@ -178,19 +197,30 @@ def train(
     logger.info(f"Total epochs: {config.training.num_epochs}")
     logger.info(f"Total training steps: {num_training_steps}")
 
+    # Load optimizer/scheduler state if resuming
+    if resume_from:
+        from pathlib import Path
+        import torch
+        checkpoint_path = Path(resume_from)
+        if (checkpoint_path / "optimizer.pt").exists():
+            opt_state = torch.load(checkpoint_path / "optimizer.pt")
+            optimizer.load_state_dict(opt_state)
+            logger.info("✓ Optimizer state loaded")
+        if (checkpoint_path / "scheduler.pt").exists():
+            sched_state = torch.load(checkpoint_path / "scheduler.pt")
+            scheduler.load_state_dict(sched_state)
+            logger.info("✓ Scheduler state loaded")
+
     # Training loop
     logger.info("=" * 70)
     logger.info("Starting training...")
     logger.info("=" * 70)
 
-    global_step = 0
-    best_val_loss = float("inf")
-
     # Setup gradient accumulation
     gradient_accumulation_steps = config.training.gradient_accumulation_steps
     logger.info(f"Using gradient accumulation: {gradient_accumulation_steps} steps")
 
-    for epoch in range(config.training.num_epochs):
+    for epoch in range(start_epoch, config.training.num_epochs):
         logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
 
         # Training
@@ -238,14 +268,13 @@ def train(
                 # Save checkpoint periodically
                 if global_step % 100 == 0:
                     checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
-                    save_model(model, tokenizer, str(checkpoint_path))
+                    training_state = {
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "best_val_loss": best_val_loss
+                    }
+                    save_model(model, tokenizer, str(checkpoint_path), optimizer, scheduler, training_state)
                     logger.info(f"Saved checkpoint: {checkpoint_path}")
-
-            # Save checkpoint periodically
-            if global_step % 100 == 0:
-                checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
-                save_model(model, tokenizer, str(checkpoint_path))
-                logger.info(f"Saved checkpoint: {checkpoint_path}")
 
         avg_train_loss = total_train_loss / len(train_dataloader)
         logger.info(f"Average training loss: {avg_train_loss:.4f}")
@@ -277,29 +306,47 @@ def train(
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 best_checkpoint = run_dir / "best"
-                save_model(model, tokenizer, str(best_checkpoint))
+                training_state = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "best_val_loss": best_val_loss
+                }
+                save_model(model, tokenizer, str(best_checkpoint), optimizer, scheduler, training_state)
                 logger.info(f"Saved best checkpoint (val_loss: {avg_val_loss:.4f})")
 
         # Save epoch checkpoint
         epoch_checkpoint = run_dir / f"epoch-{epoch + 1}"
-        save_model(model, tokenizer, str(epoch_checkpoint))
+        training_state = {
+            "epoch": epoch + 1,
+            "global_step": global_step,
+            "best_val_loss": best_val_loss
+        }
+        save_model(model, tokenizer, str(epoch_checkpoint), optimizer, scheduler, training_state)
         logger.info(f"Saved epoch checkpoint: {epoch_checkpoint}")
 
     # Save final checkpoint
     final_checkpoint = run_dir / "final"
-    save_model(model, tokenizer, str(final_checkpoint))
+    training_state = {
+        "epoch": config.training.num_epochs,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss
+    }
+    save_model(model, tokenizer, str(final_checkpoint), optimizer, scheduler, training_state)
     logger.info(f"Saved final checkpoint: {final_checkpoint}")
 
     # Save training metadata
     metadata = {
         "section": section,
         "timestamp": timestamp,
-        "epochs_completed": config.training.num_epochs,
+        "epochs_completed": epoch + 1 if epoch >= start_epoch else config.training.num_epochs,
+        "global_step": global_step,
         "final_train_loss": avg_train_loss,
         "best_val_loss": best_val_loss if val_dataloader else None,
+        "resumed_from": resume_from,
         "config": {
             "learning_rate": config.training.learning_rate,
             "batch_size": config.training.batch_size,
+            "gradient_accumulation_steps": config.training.gradient_accumulation_steps,
             "num_epochs": config.training.num_epochs,
             "max_seq_length": max_seq_length,
             "lora_r": config.lora.r,

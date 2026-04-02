@@ -298,20 +298,24 @@ def print_model_summary(model):
     logger.info("=" * 60)
 
 
-def save_model(model, tokenizer, output_dir: str):
+def save_model(model, tokenizer, output_dir: str, optimizer=None, scheduler=None, training_state: dict = None):
     """
-    Save model and tokenizer.
+    Save model, tokenizer, and training state.
 
     Args:
         model: Model instance
         tokenizer: Tokenizer instance
         output_dir: Directory to save to
+        optimizer: Optional optimizer state to save
+        scheduler: Optional scheduler state to save
+        training_state: Optional training state dict (epoch, global_step, etc.)
     """
     if not TRANSFORMERS_AVAILABLE:
         logger.error("transformers library not available")
         return
 
     from pathlib import Path
+    import torch
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -325,5 +329,84 @@ def save_model(model, tokenizer, output_dir: str):
         tokenizer.save_pretrained(output_path)
         logger.info(f"Tokenizer saved to {output_path}")
 
+        # Save training state for resumption
+        if training_state:
+            state_file = output_path / "training_state.pt"
+            torch.save(training_state, state_file)
+            logger.info(f"Training state saved to {state_file}")
+
+        # Save optimizer state
+        if optimizer:
+            opt_file = output_path / "optimizer.pt"
+            torch.save(optimizer.state_dict(), opt_file)
+            logger.info(f"Optimizer state saved to {opt_file}")
+
+        # Save scheduler state
+        if scheduler:
+            sched_file = output_path / "scheduler.pt"
+            torch.save(scheduler.state_dict(), sched_file)
+            logger.info(f"Scheduler state saved to {sched_file}")
+
     except Exception as e:
         logger.error(f"Failed to save model: {e}")
+
+
+def load_checkpoint(model, tokenizer, checkpoint_dir: str, optimizer=None, scheduler=None):
+    """
+    Load model checkpoint and optionally optimizer/scheduler state.
+
+    Args:
+        model: Model instance to load weights into
+        tokenizer: Tokenizer instance
+        checkpoint_dir: Directory containing checkpoint
+        optimizer: Optional optimizer to load state into
+        scheduler: Optional scheduler to load state into
+
+    Returns:
+        Tuple of (training_state_dict, model, tokenizer)
+        training_state_dict contains: epoch, global_step, best_val_loss, etc.
+    """
+    if not TRANSFORMERS_AVAILABLE:
+        logger.error("transformers library not available")
+        return None, model, tokenizer
+
+    from pathlib import Path
+    import torch
+    from peft import PeftModel
+
+    checkpoint_path = Path(checkpoint_dir)
+    if not checkpoint_path.exists():
+        logger.error(f"Checkpoint directory not found: {checkpoint_dir}")
+        return None, model, tokenizer
+
+    try:
+        # Load LoRA adapters
+        logger.info(f"Loading checkpoint from {checkpoint_path}")
+        model = PeftModel.from_pretrained(model, checkpoint_path)
+        logger.info("✓ Checkpoint loaded successfully")
+
+        # Load training state if available
+        training_state = {}
+        state_file = checkpoint_path / "training_state.pt"
+        if state_file.exists():
+            training_state = torch.load(state_file)
+            logger.info(f"✓ Training state loaded: epoch {training_state.get('epoch', 0)}, step {training_state.get('global_step', 0)}")
+
+        # Load optimizer state if available and optimizer provided
+        if optimizer and (checkpoint_path / "optimizer.pt").exists():
+            opt_state = torch.load(checkpoint_path / "optimizer.pt")
+            optimizer.load_state_dict(opt_state)
+            logger.info("✓ Optimizer state loaded")
+
+        # Load scheduler state if available and scheduler provided
+        if scheduler and (checkpoint_path / "scheduler.pt").exists():
+            sched_state = torch.load(checkpoint_path / "scheduler.pt")
+            scheduler.load_state_dict(sched_state)
+            logger.info("✓ Scheduler state loaded")
+
+        return training_state, model, tokenizer
+
+    except Exception as e:
+        logger.error(f"Failed to load checkpoint: {e}")
+        return None, model, tokenizer
+
