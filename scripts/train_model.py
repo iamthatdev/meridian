@@ -276,6 +276,15 @@ def train(
                     save_model(model, tokenizer, str(checkpoint_path), optimizer, scheduler, training_state)
                     logger.info(f"Saved checkpoint: {checkpoint_path}")
 
+        # CRITICAL FIX: Step optimizer for any remaining batches
+        # If we didn't complete a full gradient accumulation cycle, step anyway
+        if (len(train_dataloader) % gradient_accumulation_steps) != 0:
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            global_step += 1
+            logger.info(f"Stepped optimizer for final {len(train_dataloader) % gradient_accumulation_steps} accumulated batches")
+
         avg_train_loss = total_train_loss / len(train_dataloader)
         logger.info(f"Average training loss: {avg_train_loss:.4f}")
 

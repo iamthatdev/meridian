@@ -104,12 +104,24 @@ def load_model(
 
         if use_4bit:
             logger.info("Using 4-bit quantization (QLoRA)")
+
+            # Get compute dtype from config
+            dtype_str = config.quantization.bnb_4bit_compute_dtype
+            if dtype_str == "bfloat16":
+                compute_dtype = torch.bfloat16
+            elif dtype_str == "float16":
+                compute_dtype = torch.float16
+            else:
+                logger.warning(f"Unknown dtype {dtype_str}, defaulting to bfloat16")
+                compute_dtype = torch.bfloat16
+
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
+                bnb_4bit_compute_dtype=compute_dtype,
+                bnb_4bit_use_double_quant=config.quantization.bnb_4bit_use_double_quant,
+                bnb_4bit_quant_type=config.quantization.bnb_4bit_quant_type
             )
+            logger.info(f"  Compute dtype: {dtype_str}")
         else:
             logger.info("Using full precision (fp16)")
             model_kwargs["torch_dtype"] = torch.float16
@@ -260,6 +272,11 @@ def load_model_for_training(
     model = apply_lora(model, config)
     if model is None:
         return None, None
+
+    # Enable gradient checkpointing if configured
+    if config.quantization.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        logger.info("✓ Gradient checkpointing enabled (reduces memory usage)")
 
     logger.info(f"✅ Model and tokenizer loaded successfully for {section}")
 
