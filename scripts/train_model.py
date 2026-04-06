@@ -84,6 +84,51 @@ def train(
 
     logger.info(f"Run directory: {run_dir}")
 
+    def check_disk_space(required_mb: int = 500) -> bool:
+        """Check if sufficient disk space is available."""
+        try:
+            stat = os.statvfs(run_dir)
+            available_mb = stat.f_bavail * stat.f_frsize // (1024 * 1024)
+
+            if available_mb < required_mb:
+                logger.error(f"Insufficient disk space: {available_mb}MB available, {required_mb}MB required")
+                raise RuntimeError(f"Insufficient disk space: {available_mb}MB available, {required_mb}MB required")
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to check disk space: {e}")
+            raise
+
+    def verify_checkpoint(checkpoint_path: Path) -> bool:
+        """Verify checkpoint was saved correctly."""
+        try:
+            # Check required files exist
+            required_files = [
+                checkpoint_path / "adapter_model.safetensors",
+                checkpoint_path / "adapter_config.json",
+                checkpoint_path / "tokenizer_config.json"
+            ]
+
+            for file in required_files:
+                if not file.exists():
+                    logger.error(f"Checkpoint file missing: {file}")
+                    return False
+
+            # Check model file size
+            model_file = checkpoint_path / "adapter_model.safetensors"
+            model_size_mb = model_file.stat().st_size / (1024 * 1024)
+
+            if model_size_mb < 100:  # Less than 100MB is suspicious
+                logger.error(f"Model file too small: {model_size_mb:.2f}MB")
+                return False
+
+            logger.info(f"✓ Checkpoint verified: {checkpoint_path.name} ({model_size_mb:.2f}MB)")
+            return True
+
+        except Exception as e:
+            logger.error(f"Checkpoint verification failed: {e}")
+            return False
+
     # Load model and tokenizer
     logger.info("Loading model and tokenizer...")
     model, tokenizer = load_model_for_training(
@@ -187,9 +232,10 @@ def train(
 
     # Setup learning rate scheduler
     num_training_steps = len(train_dataloader) * config.training.num_epochs
+    num_warmup_steps = int(num_training_steps * config.training.warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=config.training.warmup_steps,
+        num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps
     )
 
@@ -199,8 +245,6 @@ def train(
 
     # Load optimizer/scheduler state if resuming
     if resume_from:
-        from pathlib import Path
-        import torch
         checkpoint_path = Path(resume_from)
         if (checkpoint_path / "optimizer.pt").exists():
             opt_state = torch.load(checkpoint_path / "optimizer.pt")
@@ -223,115 +267,178 @@ def train(
     for epoch in range(start_epoch, config.training.num_epochs):
         logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
 
-        # Training
-        model.train()
-        total_train_loss = 0
-        accumulated_loss = 0
+        try:
+            # Training
+            model.train()
+            total_train_loss = 0
+            accumulated_loss = 0
 
-        for step, batch in enumerate(train_dataloader):
-            # Move batch to device
-            input_ids = batch["input_ids"].to(model.device)
-            attention_mask = batch["attention_mask"].to(model.device)
-            labels = batch["labels"].to(model.device)
-
-            # Forward pass
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
-
-            # Scale loss for gradient accumulation
-            loss = outputs.loss / gradient_accumulation_steps
-            total_train_loss += loss.item() * gradient_accumulation_steps
-            accumulated_loss += loss.item() * gradient_accumulation_steps
-
-            # Backward pass (accumulate gradients)
-            loss.backward()
-
-            # Only step optimizer after accumulating enough gradients
-            if (step + 1) % gradient_accumulation_steps == 0:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                global_step += 1
-
-                # Log progress
-                if global_step % 10 == 0:
-                    logger.info(
-                        f"Epoch {epoch + 1} | Step {global_step} | "
-                        f"Loss: {accumulated_loss / gradient_accumulation_steps:.4f} | "
-                        f"LR: {scheduler.get_last_lr()[0]:.2e}"
-                    )
-                accumulated_loss = 0
-
-                # Save checkpoint periodically
-                if global_step % 100 == 0:
-                    checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
-                    training_state = {
-                        "epoch": epoch,
-                        "global_step": global_step,
-                        "best_val_loss": best_val_loss
-                    }
-                    save_model(model, tokenizer, str(checkpoint_path), optimizer, scheduler, training_state)
-                    logger.info(f"Saved checkpoint: {checkpoint_path}")
-
-        # CRITICAL FIX: Step optimizer for any remaining batches
-        # If we didn't complete a full gradient accumulation cycle, step anyway
-        if (len(train_dataloader) % gradient_accumulation_steps) != 0:
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-            global_step += 1
-            logger.info(f"Stepped optimizer for final {len(train_dataloader) % gradient_accumulation_steps} accumulated batches")
-
-        avg_train_loss = total_train_loss / len(train_dataloader)
-        logger.info(f"Average training loss: {avg_train_loss:.4f}")
-
-        # Validation
-        if val_dataloader:
-            logger.info("Running validation...")
-            model.eval()
-            total_val_loss = 0
-
-            with torch.no_grad():
-                for batch in val_dataloader:
+            for step, batch in enumerate(train_dataloader):
+                try:
+                    # Move batch to device
                     input_ids = batch["input_ids"].to(model.device)
                     attention_mask = batch["attention_mask"].to(model.device)
                     labels = batch["labels"].to(model.device)
 
+                    # Forward pass
                     outputs = model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         labels=labels
                     )
 
-                    total_val_loss += outputs.loss.item()
+                    # Scale loss for gradient accumulation
+                    loss = outputs.loss / gradient_accumulation_steps
 
-            avg_val_loss = total_val_loss / len(val_dataloader)
-            logger.info(f"Average validation loss: {avg_val_loss:.4f}")
+                    # Check for loss explosion (training divergence)
+                    if not torch.isfinite(loss.item()):
+                        logger.error(f"Loss exploded at epoch {epoch}, step {step}: {loss.item()}")
+                        logger.error("This typically indicates training divergence. Stopping.")
+                        raise RuntimeError("Training divergence - loss is NaN or Inf")
 
-            # Save best checkpoint
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_checkpoint = run_dir / "best"
+                    total_train_loss += loss.item() * gradient_accumulation_steps
+                    accumulated_loss += loss.item() * gradient_accumulation_steps
+
+                    # Backward pass (accumulate gradients)
+                    try:
+                        loss.backward()
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower():
+                            logger.error(f"CUDA OOM at epoch {epoch}, step {step}")
+                            raise
+                        else:
+                            raise
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        logger.error(f"CUDA OOM at epoch {epoch}, step {step}: {e}")
+                        logger.info("Attempting to save emergency checkpoint...")
+
+                        # Try to save current state before dying
+                        try:
+                            checkpoint_path = run_dir / f"OOM_CHECKPOINT_epoch_{epoch}_step_{step}"
+                            training_state = {
+                                "epoch": epoch,
+                                "global_step": global_step,
+                                "best_val_loss": best_val_loss,
+                                "oom_error": str(e)
+                            }
+                            save_model(model, tokenizer, str(checkpoint_path), None, None, training_state)
+                            logger.info(f"Emergency checkpoint saved: {checkpoint_path}")
+                        except Exception as save_error:
+                            logger.error(f"Failed to save emergency checkpoint: {save_error}")
+
+                        raise  # Re-raise to stop training
+                    else:
+                        logger.error(f"Runtime error at epoch {epoch}, step {step}: {e}")
+                        raise
+
+                # Only step optimizer after accumulating enough gradients
+                if (step + 1) % gradient_accumulation_steps == 0:
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+                    # Log progress
+                    if global_step % 10 == 0:
+                        logger.info(
+                            f"Epoch {epoch + 1} | Step {global_step} | "
+                            f"Loss: {accumulated_loss / gradient_accumulation_steps:.4f} | "
+                            f"LR: {scheduler.get_last_lr()[0]:.2e}"
+                        )
+                    accumulated_loss = 0
+
+                    # Save checkpoint periodically
+                    if global_step % 100 == 0:
+                        try:
+                            checkpoint_path = run_dir / f"checkpoint-step-{global_step}"
+                            training_state = {
+                                "epoch": epoch,
+                                "global_step": global_step,
+                                "best_val_loss": best_val_loss
+                            }
+                            check_disk_space(required_mb=500)  # Check before saving
+                            save_model(model, tokenizer, str(checkpoint_path), optimizer, scheduler, training_state)
+                            logger.info(f"Saved checkpoint: {checkpoint_path}")
+                            verify_checkpoint(checkpoint_path)  # Verify save was successful
+                        except Exception as e:
+                            logger.error(f"Failed to save checkpoint at step {global_step}: {e}")
+                            # Don't raise - training can continue
+
+            avg_train_loss = total_train_loss / len(train_dataloader)
+            logger.info(f"Average training loss: {avg_train_loss:.4f}")
+
+            # Validation
+            if val_dataloader:
+                logger.info("Running validation...")
+                model.eval()
+                total_val_loss = 0
+
+                with torch.no_grad():
+                    for batch in val_dataloader:
+                        input_ids = batch["input_ids"].to(model.device)
+                        attention_mask = batch["attention_mask"].to(model.device)
+                        labels = batch["labels"].to(model.device)
+
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels
+                        )
+
+                        total_val_loss += outputs.loss.item()
+
+                avg_val_loss = total_val_loss / len(val_dataloader)
+                logger.info(f"Average validation loss: {avg_val_loss:.4f}")
+
+                # Save best checkpoint
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    best_checkpoint = run_dir / "best"
+                    training_state = {
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "best_val_loss": best_val_loss
+                    }
+                    check_disk_space(required_mb=500)
+                    save_model(model, tokenizer, str(best_checkpoint), optimizer, scheduler, training_state)
+                    logger.info(f"Saved best checkpoint (val_loss: {avg_val_loss:.4f})")
+                    verify_checkpoint(best_checkpoint)
+
+            # Save epoch checkpoint
+            epoch_checkpoint = run_dir / f"epoch-{epoch + 1}"
+            training_state = {
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "best_val_loss": best_val_loss
+            }
+            check_disk_space(required_mb=500)
+            save_model(model, tokenizer, str(epoch_checkpoint), optimizer, scheduler, training_state)
+            logger.info(f"Saved epoch checkpoint: {epoch_checkpoint}")
+            verify_checkpoint(epoch_checkpoint)
+
+        except Exception as e:
+            logger.error(f"Exception in training loop at epoch {epoch}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+            # Try to save checkpoint before dying
+            try:
+                checkpoint_path = run_dir / f"ERROR_CHECKPOINT_epoch_{epoch}"
                 training_state = {
                     "epoch": epoch,
                     "global_step": global_step,
-                    "best_val_loss": best_val_loss
+                    "best_val_loss": best_val_loss,
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
                 }
-                save_model(model, tokenizer, str(best_checkpoint), optimizer, scheduler, training_state)
-                logger.info(f"Saved best checkpoint (val_loss: {avg_val_loss:.4f})")
+                save_model(model, tokenizer, str(checkpoint_path), None, None, training_state)
+                logger.info(f"Error checkpoint saved: {checkpoint_path}")
+            except Exception as save_error:
+                logger.error(f"Failed to save error checkpoint: {save_error}")
 
-        # Save epoch checkpoint
-        epoch_checkpoint = run_dir / f"epoch-{epoch + 1}"
-        training_state = {
-            "epoch": epoch + 1,
-            "global_step": global_step,
-            "best_val_loss": best_val_loss
-        }
-        save_model(model, tokenizer, str(epoch_checkpoint), optimizer, scheduler, training_state)
-        logger.info(f"Saved epoch checkpoint: {epoch_checkpoint}")
+            raise  # Re-raise to stop training
 
     # Save final checkpoint
     final_checkpoint = run_dir / "final"
@@ -340,8 +447,10 @@ def train(
         "global_step": global_step,
         "best_val_loss": best_val_loss
     }
+    check_disk_space(required_mb=500)
     save_model(model, tokenizer, str(final_checkpoint), optimizer, scheduler, training_state)
     logger.info(f"Saved final checkpoint: {final_checkpoint}")
+    verify_checkpoint(final_checkpoint)
 
     # Save training metadata
     metadata = {
