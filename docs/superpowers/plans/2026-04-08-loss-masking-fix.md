@@ -15,12 +15,70 @@
 **Modified Files:**
 - `scripts/train_huggingface.py` - Replace `Trainer` with `SFTTrainer`, remove custom dataset logic
 - `src/training/dataset.py` - Add deprecation warning to `SFTDataset` class
-- `tests/test_training_dataset.py` - Add deprecation notice to existing tests
+- `tests/test_training_dataset.py` - Add deprecation notice to existing tests (if exists)
+- `requirements.txt` - Verify `trl` dependency is present (may add if missing)
 
 **New Files:**
 - `scripts/verify_chat_templates.py` - Verify phi-4 and Qwen2.5 tokenizers support chat templates
 - `scripts/verify_training_data_format.py` - Validate JSONL files have correct "messages" format
 - `tests/test_loss_masking.py` - Unit tests for SFTTrainer configuration
+
+---
+
+## Pre-Flight Checks
+
+**Why:** Ensure clean working state and verify dependencies before starting migration.
+
+### Task 0: Verify Git State and Dependencies
+
+**Files:**
+- Check: `requirements.txt`
+
+- [ ] **Step 1: Check git status**
+
+Run: `git status --short`
+
+If there are uncommitted changes:
+- Either commit them first, or
+- Stash them with `git stash save "work in progress before loss masking fix"`
+
+Expected: Clean working directory (or only planned changes from this plan)
+
+- [ ] **Step 2: Check if trl is in requirements.txt**
+
+Run: `grep -i "trl" requirements.txt`
+
+Expected: Should see `trl>=0.7.0` or similar
+
+If NOT found:
+- [ ] Add trl to requirements.txt
+
+Run:
+```bash
+echo "trl>=0.7.0" >> requirements.txt
+pip install trl>=0.7.0
+```
+
+- [ ] **Step 3: Verify trl is installed**
+
+Run: `python -c "import trl; print(f'trl version: {trl.__version__}')"`
+
+Expected: Prints version number (e.g., "trl version: 0.9.0")
+
+If import fails:
+- [ ] Install trl
+
+Run: `pip install trl>=0.7.0`
+
+- [ ] **Step 4: Commit dependency if added**
+
+If you modified requirements.txt:
+
+Run:
+```bash
+git add requirements.txt
+git commit -m "deps: add trl>=0.7.0 dependency for SFTTrainer"
+```
 
 ---
 
@@ -338,19 +396,29 @@ if __name__ == "__main__":
 
 Run: `chmod +x scripts/verify_training_data_format.py`
 
-- [ ] **Step 3: Test validation script with actual data**
+- [ ] **Step 3: Discover available training files**
 
-First, check what training files exist:
+Run: `find data -name "*.jsonl" -type f | grep -E "(train|val)" | sort`
 
-Run: `find data -name "*_train.jsonl" -o -name "*_val.jsonl" | head`
+Expected: Lists all available training files
 
-Then validate one:
+If NO files found:
+- [ ] Stop and create training data first
+- [ ] Cannot proceed without training data
+
+- [ ] **Step 4: Test validation script with actual data**
 
 Run: `python scripts/verify_training_data_format.py data/splits/math_train.jsonl`
 
 Expected: Either "✓ All examples have valid format" or specific error messages
 
-- [ ] **Step 4: Commit validation script**
+If validation FAILS:
+- [ ] Review error messages carefully
+- [ ] Decide: Fix data format OR abort migration
+- [ ] If fixing: Update data generation pipeline first, then re-run validation
+- [ ] Only proceed to Task 3 when all files pass validation
+
+- [ ] **Step 5: Commit validation script**
 
 ```bash
 git add scripts/verify_training_data_format.py
@@ -659,10 +727,20 @@ git commit -m "deprecate: mark SFTDataset as deprecated, migrate to trl.SFTTrain
 ## Task 5: Mark Existing Tests as Testing Deprecated Functionality
 
 **Files:**
-- Modify: `tests/test_training_dataset.py`
+- Modify: `tests/test_training_dataset.py` (if exists)
 
 **Why:** Update existing tests so developers know they're testing deprecated functionality.
 
+- [ ] **Step 0: Check if test file exists**
+
+Run: `ls -la tests/test_training_dataset.py 2>/dev/null || echo "File does not exist"`
+
+If file DOES NOT exist:
+- [ ] Skip this task (no existing tests to mark as deprecated)
+- [ ] Note: New tests created in Task 3 cover SFTTrainer testing
+- [ ] Proceed to Task 6
+
+If file EXISTS:
 - [ ] **Step 1: Add deprecation notice at top of test file**
 
 ```python
@@ -679,7 +757,13 @@ import pytest
 # ... rest of imports unchanged
 ```
 
-- [ ] **Step 2: Run tests to verify they still pass**
+- [ ] **Step 2: Run tests to verify deprecation doesn't break them**
+
+Run: `pytest tests/test_training_dataset.py -v 2>&1 | head -20`
+
+Expected: Tests pass with deprecation warnings visible in output
+
+- [ ] **Step 3: Commit test file update**
 
 Run: `pytest tests/test_training_dataset.py -v`
 
@@ -701,7 +785,21 @@ git commit -m "test: mark test_training_dataset.py as testing deprecated functio
 
 **Why:** Replace the broken custom dataset implementation with `trl.SFTTrainer`, which correctly implements loss masking.
 
-- [ ] **Step 1: Update imports**
+- [ ] **Step 0: Read current train_huggingface.py to understand structure**
+
+Run: `head -150 scripts/train_huggingface.py`
+
+Note: Current function signatures, imports, and data loading structure
+
+- [ ] **Step 1: Check if script supports --max-steps parameter for testing**
+
+Run: `python scripts/train_huggingface.py --help | grep -i "max-steps\|max_steps"`
+
+If parameter NOT supported:
+- [ ] Note: Will need to modify TrainingArguments directly in Task 7 for testing
+- [ ] Proceed with migration
+
+- [ ] **Step 2: Update imports**
 
 Replace:
 ```python
@@ -726,15 +824,26 @@ from trl import SFTTrainer  # Add this
 from datasets import load_dataset  # Add this
 ```
 
-- [ ] **Step 2: Remove create_dataset_from_jsonl function**
+- [ ] **Step 3: Remove create_dataset_from_jsonl function**
 
-Remove the entire function (lines 48-83 in current file):
-```python
-def create_dataset_from_jsonl(data_path: str, tokenizer, max_length: int) -> Dataset:
-    # ... remove entire function
+Find and remove the entire function (approximately lines 48-83):
+
+Run: `grep -n "def create_dataset_from_jsonl" scripts/train_huggingface.py`
+
+Note the line numbers, then remove the function using your editor or:
+
+```bash
+# Find line numbers
+start_line=$(grep -n "def create_dataset_from_jsonl" scripts/train_huggingface.py | cut -d: -f1)
+echo "Function starts at line: $start_line"
+
+# View the function to find end
+sed -n "${start_line},/^def /p" scripts/train_huggingface.py | head -50
 ```
 
-- [ ] **Step 3: Update train function to use SFTTrainer**
+Then manually remove the function in your editor.
+
+- [ ] **Step 4: Update train function to use SFTTrainer**
 
 Replace the dataset creation and trainer setup (around lines 236-278) with:
 
@@ -921,13 +1030,19 @@ def train(
     logger.info("=" * 70)
 ```
 
-- [ ] **Step 4: Run unit tests to verify changes don't break anything**
+- [ ] **Step 5: Verify the changes compile**
+
+Run: `python -m py_compile scripts/train_huggingface.py`
+
+Expected: No syntax errors
+
+- [ ] **Step 6: Run unit tests to verify changes don't break anything**
 
 Run: `pytest tests/test_loss_masking.py -v`
 
 Expected: Tests pass
 
-- [ ] **Step 5: Commit training script migration**
+- [ ] **Step 7: Commit training script migration**
 
 ```bash
 git add scripts/train_huggingface.py
@@ -952,13 +1067,32 @@ git commit -m "feat: migrate train_huggingface.py to use trl.SFTTrainer
 
 - [ ] **Step 1: Run short training test**
 
+If `--max-steps` parameter is supported:
+
 Run:
 ```bash
 python scripts/train_huggingface.py \
   --section reading_writing \
   --env production \
-  --max-steps 10 \
-  --output-dir test_migration
+  --max-steps 10
+```
+
+If `--max-steps` is NOT supported, temporarily modify the script:
+
+Run:
+```bash
+# Backup original script
+cp scripts/train_huggingface.py scripts/train_huggingface.py.bak
+
+# Temporarily add max_steps to TrainingArguments
+# Edit scripts/train_huggingface.py and add this line to the TrainingArguments:
+# max_steps=10,  # Add this line
+
+# Run the short test
+python scripts/train_huggingface.py --section reading_writing --env production
+
+# Restore original script
+mv scripts/train_huggingface.py.bak scripts/train_huggingface.py
 ```
 
 Expected:
@@ -968,13 +1102,31 @@ Expected:
 
 - [ ] **Step 2: Verify checkpoint was created**
 
-Run: `ls -la test_migration/*/final_model/`
+Run: `ls -la checkpoints/*/final_model/ | tail -5`
 
 Expected: See model files (adapter_model.safetensors, config files, etc.)
 
-- [ ] **Step 3: Clean up test run**
+- [ ] **Step 3: Clean up test run (SAFELY)**
 
-Run: `rm -rf test_migration`
+First verify the directory:
+
+Run: `ls -la checkpoints/ | grep "$(date +%Y%m%d)"`
+
+Then remove only the test run directory:
+
+Run:
+```bash
+# Get today's date
+today=$(date +%Y%m%d)
+
+# Remove only today's test runs (be careful!)
+rm -rf "/*/reading_writing/${today}_*"/*
+
+# Or remove entire specific test run directory
+# rm -rf checkpoints/reading_writing/TIMESTAMP
+```
+
+**WARNING:** Double-check the directory path before running rm -rf!
 
 - [ ] **Step 4: Run all tests**
 
