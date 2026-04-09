@@ -27,6 +27,33 @@ class SFTDataset(Dataset):
 
     Loads JSONL training data with chat messages and applies loss masking
     to compute loss only on assistant tokens.
+
+    .. deprecated::
+        This class has incorrect loss masking implementation.
+        Use `trl.SFTTrainer` instead, which handles SFT training correctly.
+
+        This class is kept for backward compatibility only and will be
+        removed in a future version.
+
+        Migration guide:
+
+        **Old code:**
+        >>> from src.training.dataset import SFTDataset
+        >>> dataset = SFTDataset("data.jsonl", tokenizer, max_seq_length=2048)
+
+        **New code:**
+        >>> from trl import SFTTrainer
+        >>> from datasets import load_dataset
+        >>> dataset = load_dataset("json", data_files="data.jsonl", split="train")
+        >>> trainer = SFTTrainer(
+        ...     model=model,
+        ...     train_dataset=dataset,
+        ...     dataset_text_field="messages",
+        ...     max_seq_length=2048,
+        ...     tokenizer=tokenizer
+        ... )
+
+        See: https://huggingface.co/docs/trl/main/en/sft_trainer
     """
 
     def __init__(
@@ -45,6 +72,17 @@ class SFTDataset(Dataset):
             max_seq_length: Maximum sequence length
             section: Optional section filter (reading_writing, math)
         """
+        # Deprecation warning
+        import warnings
+        warnings.warn(
+            "SFTDataset is deprecated due to incorrect loss masking implementation. "
+            "Use 'trl.SFTTrainer' instead. "
+            "See: https://huggingface.co/docs/trl/main/en/sft_trainer "
+            "Migration instructions in SFTDataset docstring.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is required for SFTDataset")
 
