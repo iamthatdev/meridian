@@ -17,11 +17,13 @@ The pipeline runs in two environments:
 | Environment | Backend | Purpose |
 |---|---|---|
 | `local` | Apple Silicon (MLX) | Pipeline validation on a small proxy model |
-| `production` | vast.ai (CUDA) | Full-scale fine-tuning on production models |
+| `production` | RunPod (CUDA) | Full-scale fine-tuning on production models |
 
 The `APP_ENV` environment variable (set in `.env`) controls which config, model, and
 training backend is active at any given time. **Never hardcode model names or paths.**
 Always read them from the active config.
+
+**Note:** MLT automation for RunPod deployment is in `~/mlt_automation/`, not in this repository.
 
 ---
 
@@ -30,11 +32,8 @@ Always read them from the active config.
 ```
 meridian/
 ├── configs/
-│   ├── local.yaml              # Local M4 config (proxy model, MLX)
-│   ├── production.yaml         # vast.ai config (production models, CUDA)
-│   └── models/
-│       ├── rw.yaml             # RW-specific hyperparams and schema
-│       └── math.yaml           # Math-specific hyperparams and schema
+│   ├── production.yaml         # RunPod config (production models, CUDA)
+│   └── models/                 # Model-specific configs
 │
 ├── data/
 │   ├── raw/                    # Untouched source data (gitignored)
@@ -68,7 +67,8 @@ meridian/
 │
 ├── scripts/
 │   ├── generate_data.py        # CLI: generate + validate a dataset
-│   ├── train.py                # CLI: run training for a section
+│   ├── train_model.py          # Legacy training script (has bugs)
+│   ├── train_huggingface.py    # HuggingFace Trainer script (recommended)
 │   ├── evaluate.py             # CLI: run eval against a checkpoint
 │   └── deploy.py               # CLI: push checkpoint to serving endpoint
 │
@@ -112,13 +112,15 @@ cp .env.example .env
 Required packages: `mlx`, `mlx-lm`, `transformers`, `datasets`, `pydantic`,
 `fastapi`, `uvicorn`, `loguru`, `ruff`, `mypy`, `pytest`
 
-### Production (vast.ai)
+### Production (RunPod)
 
 ```bash
-# On the vast.ai instance
+# On the RunPod instance
 pip install -r requirements.txt
 # Set APP_ENV=production and HF_TOKEN in .env
 ```
+
+**RunPod Deployment:** Use the MLT automation at `~/mlt_automation/` for GPU discovery, instance creation, and training deployment. See MLT automation docs for details.
 
 Required packages: same as local minus `mlx` and `mlx-lm`, plus `torch`,
 `bitsandbytes`, `trl`, `peft`
@@ -131,7 +133,7 @@ Required packages: same as local minus `mlx` and `mlx-lm`, plus `torch`,
 |---|---|---|
 | `APP_ENV` | ✅ | `local` or `production` |
 | `HF_TOKEN` | ✅ (prod) | HuggingFace token for gated models |
-| `VAST_API_KEY` | ✅ (prod) | vast.ai API key |
+| `RUNPOD_API_KEY` | ✅ (prod) | RunPod API key (set in `~/mlt_automation/.env`) |
 | `LOG_LEVEL` | ❌ | Defaults to `INFO` |
 | `FORCE_MODEL` | ❌ | Override model ID for one-off debugging only |
 
@@ -141,41 +143,46 @@ Never commit `.env`. All secrets live there and nowhere else.
 
 ## Config Schema
 
-Configs use YAML. Both `local.yaml` and `production.yaml` must contain these keys:
+Configs use YAML. `configs/production.yaml` contains the production configuration:
 
 ```yaml
-env: local | production
+app_env: production
 
-model:
-  rw: <hf model id>
-  math: <hf model id>
-  fallback: <hf model id>
+models:
+  rw_model_id: <hf model id>
+  math_model_id: <hf model id>
+  fallback_model_id: <hf model id>
+
+lora:
+  r: int
+  alpha: int
+  dropout: float
+
+quantization:
+  load_in_4bit: bool
+  bnb_4bit_quant_type: str
+  bnb_4bit_compute_dtype: str
+  gradient_checkpointing: bool
 
 training:
-  lora_r: int
-  lora_alpha: int
-  lora_dropout: float
   learning_rate: float
   batch_size: int
-  max_seq_length: int
+  gradient_accumulation_steps: int
   num_epochs: int
-  warmup_steps: int
-
-data:
-  train_split: float       # e.g. 0.85
-  val_split: float         # e.g. 0.10
-  test_split: float        # e.g. 0.05
-  min_examples: int        # pipeline refuses to train below this count
+  max_seq_length_rw: int
+  max_seq_length_math: int
+  warmup_ratio: float
 
 paths:
-  data_dir: data/
-  output_dir: outputs/
-  checkpoint_dir: outputs/checkpoints/
-  log_dir: outputs/logs/
+  data_dir: /root/meridian/data
+  training_dir: /root/meridian/data/training
+  generated_dir: /root/meridian/data/generated
+  validated_dir: /root/meridian/data/validated
+  checkpoint_dir: /root/meridian/checkpoints
+  log_dir: /root/meridian/logs
 ```
 
-Config is always loaded via `src/models/base.py:load_config()`. Never read YAML
-directly in feature code.
+Config is loaded via `src/config.py:load_config()`. Never read YAML directly in feature code.
 
 ---
 
@@ -493,34 +500,50 @@ training on dangerously small datasets.
 
 ## Training
 
-### Running Training
+### Recommended: HuggingFace SFTTrainer
+
+**Use `scripts/train_huggingface.py` for all training.** This script uses `trl.SFTTrainer` which correctly implements loss masking for supervised fine-tuning.
 
 ```bash
-# Local (MLX) — pipeline validation only
-APP_ENV=local python scripts/train.py --section rw
-APP_ENV=local python scripts/train.py --section math
+# Train math model on RunPod
+python scripts/train_huggingface.py --section math --env production
 
-# Production (CUDA) — full fine-tuning
-APP_ENV=production python scripts/train.py --section rw
-APP_ENV=production python scripts/train.py --section math
+# Train reading/writing model
+python scripts/train_huggingface.py --section reading_writing --env production
+
+# Resume from checkpoint
+python scripts/train_huggingface.py --section math --resume-from checkpoints/math/latest
 ```
 
-### Trainer Factory
+**Why SFTTrainer:**
 
-`src/training/trainer.py` exposes a `get_trainer(config, section)` factory that
-returns either an `MLXTrainer` or `CUDATrainer` based on `APP_ENV`. Never
-instantiate trainers directly — always use the factory. This is what keeps local
-and production code paths cleanly separated.
+- Correctly implements loss masking (only computes loss on assistant tokens)
+- Handles all chat template formats automatically
+- Industry-standard library for SFT training
+- Zero data preprocessing required
+
+### Deprecated: Custom Dataset
+
+**The `SFTDataset` class in `src/training/dataset.py` is deprecated.** It has incorrect loss masking implementation. Use `trl.SFTTrainer` instead.
+
+See migration guide in the `SFTDataset` docstring.
+
+### Legacy Script (Buggy)
+
+**`scripts/train_model.py` has known bugs** - use `train_huggingface.py` instead. The legacy script has:
+- Import statement issues
+- Duplicate imports inside functions
+- Incorrect config parameter usage
 
 ### Checkpointing
 
-Checkpoints are saved to `outputs/checkpoints/{section}/{timestamp}/`.
-Each checkpoint directory must contain:
+Checkpoints are saved to `checkpoints/{section}/{timestamp}/`.
+Each checkpoint directory contains:
 
 - `adapter_model.safetensors` — LoRA adapter weights
 - `adapter_config.json` — LoRA configuration
-- `training_args.json` — snapshot of the config used for this run
-- `eval_results.json` — validation metrics at checkpoint time
+- `tokenizer_config.json` — Tokenizer configuration
+- Training logs and metrics
 
 ---
 
@@ -598,32 +621,30 @@ Raise specific exceptions, never bare `Exception`:
 ## What Claude Should Never Do
 
 - Do not hardcode model IDs anywhere outside of YAML config files.
-- Do not write training code that imports `mlx` or `mlx_lm` without guarding on
-  `APP_ENV == "local"`.
+- Do not use `scripts/train_model.py` - it has known bugs. Use `scripts/train_huggingface.py`.
 - Do not commit `.env`, `data/raw/`, `data/generated/`, or `outputs/`.
-- Do not add new top-level dependencies without updating `requirements.txt` and
-  the relevant section of this file.
-- Do not skip the trainer factory — never instantiate `MLXTrainer` or `CUDATrainer`
-  directly in scripts.
-- Do not write examples to `data/splits/` that have not passed `validator.py`.
+- Do not add new top-level dependencies without updating `requirements.txt`.
+- Do not write examples to `data/splits/` that have not passed validation.
 - Do not infer schema fields from code — always read the field table in this file.
 - Do not use `print()` in any file under `src/` — use `loguru`.
 - Do not modify `SCHEMA_VERSION` without also updating this file's schema section.
 - Do not assume the `passage` field is populated — always check for null before use.
+- Do not create custom training loops — use `transformers.Trainer` from HuggingFace.
 
 ---
 
 ## Useful Commands
 
 ```bash
-# Generate data
-python scripts/generate_data.py --section rw --count 500 --difficulty hard
+# Training (recommended - HuggingFace)
+python scripts/train_huggingface.py --section math --env production
+python scripts/train_huggingface.py --section reading_writing --env production
+
+# Training with resume
+python scripts/train_huggingface.py --section math --resume-from checkpoints/math/latest
 
 # Check validated example counts
 find data/validated -name "*.jsonl" | xargs wc -l
-
-# Run training (local smoke test)
-APP_ENV=local python scripts/train.py --section math
 
 # Run full test suite
 pytest tests/ -v
@@ -635,11 +656,50 @@ pytest tests/test_data.py -v
 ruff check src/ && mypy src/
 
 # Tail training logs
-tail -f outputs/logs/train_$(date +%Y-%m-%d).log
-
-# Inspect rejected examples
-cat outputs/logs/rejected.jsonl | python -m json.tool | less
+tail -f logs/training_*.log
 ```
+
+### RunPod Deployment Commands
+
+```bash
+# Discover available GPUs
+cd ~/mlt_automation
+./mlt_train.sh discover A100-80GB 80
+
+# Create a training instance
+./mlt_train.sh create --gpu A100-80GB --pricing spot
+
+# Check instance status
+./mlt_train.sh status
+```
+
+---
+
+## RunPod Deployment (MLT Automation)
+
+The MLT (Machine Learning Training) automation system is located at `~/mlt_automation/` (outside this repository).
+
+**Features:**
+- GPU discovery with pricing (spot and on-demand)
+- Automatic instance creation on RunPod
+- 5-second graceful shutdown for checkpoint saving
+- SSH key management
+- Cost tracking and estimation
+
+**Quick Start:**
+```bash
+cd ~/mlt_automation
+./mlt_train.sh discover A100-80GB 80
+./mlt_train.sh create --gpu A100-80GB --pricing spot
+./mlt_train.sh status
+```
+
+**Environment Setup:**
+- API key: `~/mlt_automation/.env` (contains `RUNPOD_API_KEY`)
+- Config: `~/mlt_automation/config/mlt.conf`
+- State: `~/mlt_automation/state/`
+
+**Important:** The MLT automation uses RunPod, not vast.ai. All production deployment should use this system.
 
 ---
 
@@ -648,16 +708,23 @@ cat outputs/logs/rejected.jsonl | python -m json.tool | less
 > Keep this section up to date as the project progresses. Claude reads this to
 > understand what has already been built before generating new code.
 
-- [ ] Scaffold complete
-- [ ] Config loader implemented (`src/models/base.py`)
-- [ ] Data generator implemented (`src/data/generator.py`)
-- [ ] Pydantic schema + validator implemented (`src/data/validator.py`)
-- [ ] Data pipeline orchestrator implemented (`src/data/pipeline.py`)
-- [ ] Local training loop working (MLX)
-- [ ] Production training loop working (CUDA)
-- [ ] Evaluation pipeline complete
-- [ ] FastAPI server working
-- [ ] First production checkpoint trained — RW
-- [ ] First production checkpoint trained — Math
-- [ ] Deployment script working (`scripts/deploy.py`)
+- [x] Config loader implemented (`src/config.py`)
+- [x] Pydantic schema + validator implemented (`src/auto_qa/schema.py`)
+- [x] HuggingFace training script (`scripts/train_huggingface.py`)
+- [x] Production config updated for RunPod deployment
+- [x] MLT automation for RunPod GPU management (`~/mlt_automation/`)
+- [ ] Data generator implementation incomplete
+- [ ] Data pipeline orchestrator incomplete
+- [ ] Local MLX training not implemented
+- [ ] Evaluation pipeline incomplete
+- [ ] FastAPI server incomplete
+
+**Production-ready:**
+- Use `scripts/train_huggingface.py` for training
+- Use `~/mlt_automation/` for RunPod deployment
+- Config schema matches `configs/production.yaml`
+
+**Known Issues:**
+- `scripts/train_model.py` has bugs (use `train_huggingface.py` instead)
+- `src/training/trainer.py` and related files are empty/incomplete
 ```
