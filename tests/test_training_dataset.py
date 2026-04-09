@@ -1,4 +1,11 @@
-"""Tests for training dataset module."""
+"""
+Tests for SFTDataset class.
+
+.. deprecated::
+    These tests cover the deprecated SFTDataset class.
+    New code should use trl.SFTTrainer instead.
+    See: tests/test_loss_masking.py for tests of the new approach.
+"""
 
 import json
 import pytest
