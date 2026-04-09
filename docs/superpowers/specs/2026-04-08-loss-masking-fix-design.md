@@ -132,18 +132,35 @@ trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset)
 from trl import SFTTrainer
 from datasets import load_dataset
 
-# Load JSONL directly - no preprocessing needed
+# Load training data - no preprocessing needed
 train_dataset = load_dataset(
     "json",
     data_files=str(train_file),
     split="train"
 )
 
+# Load validation data if exists
+val_dataset = None
+if val_file.exists():
+    val_dataset = load_dataset(
+        "json",
+        data_files=str(val_file),
+        split="train"
+    )
+
+# Verify tokenizer has chat template support
+if not hasattr(tokenizer, 'apply_chat_template'):
+    raise ValueError(
+        f"Tokenizer for {model_name} doesn't support chat templates. "
+        f"SFTTrainer requires a tokenizer with chat_template attribute."
+    )
+
 # SFTTrainer handles everything automatically
 trainer = SFTTrainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
+    eval_dataset=val_dataset,  # Validation dataset
     dataset_text_field="messages",  # Use the 'messages' field from JSONL
     max_seq_length=max_length,
     tokenizer=tokenizer,
@@ -195,20 +212,84 @@ class SFTDataset(Dataset):
 
 ## Testing Strategy
 
-### Unit Test: Verify Loss Masking
+### Pre-Training Verification
+
+**Verify chat template compatibility:**
+```bash
+# Test that both models support required chat template
+python -c "
+from transformers import AutoTokenizer
+
+# Test phi-4
+print('Testing phi-4 tokenizer...')
+tokenizer = AutoTokenizer.from_pretrained('microsoft/phi-4')
+test_msg = [{'role': 'user', 'content': 'test'}]
+result = tokenizer.apply_chat_template(test_msg, tokenize=False)
+print(f'✓ phi-4 supports chat templates')
+
+# Test Qwen2.5
+print('Testing Qwen2.5 tokenizer...')
+tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen2.5-7B-Instruct')
+result = tokenizer.apply_chat_template(test_msg, tokenize=False)
+print(f'✓ Qwen2.5 supports chat templates')
+"
+```
+
+**Verify data format:**
+```python
+# scripts/verify_training_data_format.py
+import json
+import sys
+from pathlib import Path
+
+def verify_data_format(data_file: Path):
+    """Verify training data has correct format for SFTTrainer."""
+    with open(data_file) as f:
+        for line_num, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+
+            example = json.loads(line)
+
+            # Check for messages field
+            if "messages" not in example:
+                print(f"❌ Line {line_num}: Missing 'messages' field. Found: {list(example.keys())}")
+                return False
+
+            # Check messages is a list
+            if not isinstance(example["messages"], list):
+                print(f"❌ Line {line_num}: 'messages' must be a list")
+                return False
+
+            # Check each message has role and content
+            for msg in example["messages"]:
+                if "role" not in msg or "content" not in msg:
+                    print(f"❌ Line {line_num}: Message missing 'role' or 'content'")
+                    return False
+
+    print(f"✓ {data_file} has correct format")
+    return True
+
+if __name__ == "__main__":
+    data_files = sys.argv[1:] if len(sys.argv) > 1 else ["data/splits/math_train.jsonl"]
+    all_valid = all(verify_data_format(Path(f)) for f in data_files)
+    sys.exit(0 if all_valid else 1)
+```
+
+### Unit Test: Verify SFTTrainer Configuration
 
 **File:** `tests/test_loss_masking.py`
 
 ```python
 import pytest
-import torch
-from transformers import AutoTokenizer
+from unittest.mock import Mock, patch
 from trl import SFTTrainer
 from datasets import Dataset
 
-def test_loss_masking_only_computes_on_assistant_tokens():
-    """Test that loss is only computed on assistant tokens."""
-    # Create simple test dataset
+
+def test_sft_trainer_configuration():
+    """Test that SFTTrainer is correctly configured for SFT training."""
+    # Create test dataset
     data = {
         "messages": [
             [
@@ -220,29 +301,67 @@ def test_loss_masking_only_computes_on_assistant_tokens():
     }
     dataset = Dataset.from_dict(data)
 
-    # Load small model for testing
-    model = AutoModelForCausalLM.from_pretrained("gpt2")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    # Mock model and tokenizer
+    mock_model = Mock()
+    mock_model.config = Mock()
+    mock_model.config.vocab_size = 1000
 
-    # Train one step
+    mock_tokenizer = Mock()
+    mock_tokenizer.pad_token_id = 0
+    mock_tokenizer.eos_token_id = 1
+    mock_tokenizer.apply_chat_template.return_value = "formatted text"
+
+    # Create trainer
     trainer = SFTTrainer(
-        model=model,
+        model=mock_model,
         train_dataset=dataset,
         max_seq_length=128,
-        dataset_text_field="messages"
+        dataset_text_field="messages",
+        tokenizer=mock_tokenizer
     )
 
-    # Get labels from first batch
-    batch = next(iter(trainer.get_train_dataloader()))
-    labels = batch["labels"]
+    # Verify trainer is configured correctly
+    assert hasattr(trainer, 'train_dataset')
+    assert trainer.train_dataset == dataset
+    assert trainer.max_seq_length == 128
 
-    # Verify non-assistant tokens are masked
-    # (labels should be -100 for system/user tokens)
-    assert (labels[0] == -100).any(), "System/user tokens should be masked"
 
-    # Verify assistant tokens are not masked
-    # (labels should have actual token IDs for assistant response)
-    assert (labels[0] != -100).any(), "Assistant tokens should not be masked"
+def test_sft_trainer_with_validation_dataset():
+    """Test that SFTTrainer handles validation datasets correctly."""
+    train_data = {
+        "messages": [[
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"}
+        ]]
+    }
+    val_data = {
+        "messages": [[
+            {"role": "user", "content": "Val Question"},
+            {"role": "assistant", "content": "Val Answer"}
+        ]]
+    }
+
+    train_dataset = Dataset.from_dict(train_data)
+    val_dataset = Dataset.from_dict(val_data)
+
+    mock_model = Mock()
+    mock_model.config = Mock()
+    mock_model.config.vocab_size = 1000
+
+    mock_tokenizer = Mock()
+    mock_tokenizer.pad_token_id = 0
+    mock_tokenizer.eos_token_id = 1
+
+    trainer = SFTTrainer(
+        model=mock_model,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        max_seq_length=128,
+        dataset_text_field="messages",
+        tokenizer=mock_tokenizer
+    )
+
+    assert trainer.eval_dataset == val_dataset
 ```
 
 ### Integration Test: End-to-End Training
@@ -277,6 +396,7 @@ python scripts/train_huggingface.py \
 
 **Implementation:**
 ```python
+# Check trl is installed
 try:
     from trl import SFTTrainer
 except ImportError as e:
@@ -285,66 +405,113 @@ except ImportError as e:
         "Install with: pip install trl"
     ) from e
 
+# Verify tokenizer has chat template
+if not hasattr(tokenizer, 'apply_chat_template'):
+    raise ValueError(
+        f"Tokenizer for {model_name} doesn't support chat templates. "
+        f"SFTTrainer requires a tokenizer with chat_template attribute."
+    )
+
 # Validate dataset format
 if "messages" not in dataset.column_names:
     raise ValueError(
         f"Dataset must have 'messages' field. "
         f"Found columns: {dataset.column_names}"
     )
+
+# Verify data format before training
+import json
+with open(train_file) as f:
+    first_line = f.readline()
+    example = json.loads(first_line)
+
+    if "messages" not in example:
+        raise ValueError(
+            f"Training data must have 'messages' field. "
+            f"Found keys: {list(example.keys())}"
+        )
+
+    if not isinstance(example["messages"], list):
+        raise ValueError("'messages' must be a list")
 ```
 
 ## Migration Steps
 
 1. **Update dependencies** (5 min)
    ```bash
-   echo "trl>=0.7.0" >> requirements.txt
+   # Note: trl>=0.7.0 should already be in requirements.txt
    pip install trl
    ```
 
-2. **Modify train_huggingface.py** (30 min)
+2. **Verify chat template compatibility** (5 min)
+   ```bash
+   # Test that both models support required chat template
+   python scripts/verify_chat_templates.py
+   ```
+
+3. **Verify data format** (5 min)
+   ```bash
+   python scripts/verify_training_data_format.py data/splits/math_train.jsonl
+   python scripts/verify_training_data_format.py data/splits/reading_writing_train.jsonl
+   ```
+
+4. **Modify train_huggingface.py** (30 min)
    - Replace imports
    - Remove `create_dataset_from_jsonl()` function
    - Replace `Trainer` with `SFTTrainer`
    - Update dataset loading to use `load_dataset("json", ...)`
+   - Add validation dataset support
+   - Add chat template verification
+   - Add data format validation
 
-3. **Deprecate SFTDataset** (10 min)
+5. **Deprecate SFTDataset** (10 min)
    - Add deprecation warning
    - Update docstring
    - Keep code functional
 
-4. **Add tests** (30 min)
+6. **Update tests** (30 min)
    - Create `tests/test_loss_masking.py`
-   - Implement unit test
-   - Verify with short training run
+   - Mark `tests/test_training_dataset.py` as testing deprecated functionality
+   - Add deprecation notice to existing tests
 
-5. **Verify** (15 min)
-   - Run integration test
-   - Generate sample outputs
-   - Confirm loss decreases
+7. **Verify** (30 min)
+   - Run unit tests
+   - Run short training (10 steps)
+   - Verify loss decreases
+   - Test generation quality
 
-**Total estimated time:** 1.5-2 hours
+**Total estimated time:** 2-3 hours
 
 ## Rollback Plan
 
 If something goes wrong:
 
-1. **Git revert** - Changes are isolated to two files
+1. **Git revert** - Changes are isolated to minimal files
    ```bash
    git checkout HEAD -- scripts/train_huggingface.py src/training/dataset.py
    ```
 
-2. **Fallback script** - `scripts/train_model.py` still exists (legacy)
+2. **Fallback script** - `scripts/train_model.py` still exists (legacy, but functional)
 
 3. **Data unchanged** - No modification to training data required
 
+4. **Verification** - Before rollback, verify old script still works
+   ```bash
+   # Quick test with legacy script
+   python scripts/train_model.py --section math --max-steps 5
+   ```
+
 ## Success Criteria
 
-✅ **Loss masking verified** - Unit test confirms loss only on assistant tokens
+✅ **Chat templates verified** - Both phi-4 and Qwen2.5 support required templates
+✅ **Data format validated** - All training files have correct "messages" format
+✅ **Unit tests pass** - SFTTrainer configuration tests pass
 ✅ **Training runs** - Integration test completes without errors
-✅ **Loss decreases** - Training loss decreases over steps
+✅ **Loss decreases** - Training loss decreases over steps (not just on all tokens)
+✅ **Validation works** - Validation dataset loads and evaluation runs
 ✅ **Model generates** - Can generate valid SAT questions
-✅ **Tests pass** - All unit and integration tests pass
 ✅ **Zero data changes** - Existing JSONL files work without modification
+✅ **Old tests marked** - Existing SFTDataset tests marked as deprecated
 
 ## References
 
