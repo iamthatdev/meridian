@@ -42,7 +42,6 @@ class TestSFTTrainerConfiguration:
         trainer = SFTTrainer(
             model=mock_model,
             train_dataset=dataset,
-            max_seq_length=128,
             dataset_text_field="messages",
             tokenizer=mock_tokenizer
         )
@@ -50,7 +49,6 @@ class TestSFTTrainerConfiguration:
         # Verify trainer is configured correctly
         assert hasattr(trainer, 'train_dataset')
         assert trainer.train_dataset == dataset
-        assert trainer.max_seq_length == 128
         assert hasattr(trainer, 'tokenizer')
 
     def test_sft_trainer_with_validation_dataset(self):
@@ -87,7 +85,6 @@ class TestSFTTrainerConfiguration:
             model=mock_model,
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
-            max_seq_length=128,
             dataset_text_field="messages",
             tokenizer=mock_tokenizer
         )
@@ -119,7 +116,6 @@ class TestSFTTrainerConfiguration:
         trainer = SFTTrainer(
             model=mock_model,
             train_dataset=dataset,
-            max_seq_length=128,
             dataset_text_field="messages",
             tokenizer=mock_tokenizer
         )

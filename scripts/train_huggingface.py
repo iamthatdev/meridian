@@ -14,73 +14,15 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
-from datasets import Dataset
+from datasets import Dataset, load_dataset
 from loguru import logger
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    Trainer,
-    TrainingArguments,
     BitsAndBytesConfig,
 )
-
-
-def load_jsonl_data(data_path: str) -> List[Dict]:
-    """Load data from JSONL file."""
-    data = []
-    with open(data_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-    return data
-
-
-def format_messages_for_training(messages: List[Dict], tokenizer) -> str:
-    """Format messages using the model's chat template."""
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False
-    )
-
-
-def create_dataset_from_jsonl(data_path: str, tokenizer, max_length: int) -> Dataset:
-    """Create HuggingFace Dataset from JSONL file."""
-    logger.info(f"Loading data from {data_path}")
-
-    # Load JSONL data
-    raw_data = load_jsonl_data(data_path)
-    logger.info(f"Loaded {len(raw_data)} examples")
-
-    # Format messages using chat template
-    formatted_texts = []
-    for item in raw_data:
-        if "messages" in item:
-            formatted = format_messages_for_training(item["messages"], tokenizer)
-            formatted_texts.append(formatted)
-        else:
-            logger.warning(f"Skipping item without 'messages' field: {item}")
-
-    # Tokenize
-    logger.info("Tokenizing data...")
-    tokenized = tokenizer(
-        formatted_texts,
-        max_length=max_length,
-        truncation=True,
-        padding="max_length",
-        return_tensors=None
-    )
-
-    # Create dataset
-    dataset = Dataset.from_dict({
-        "input_ids": tokenized["input_ids"],
-        "attention_mask": tokenized["attention_mask"],
-        "labels": tokenized["input_ids"].copy()  # For causal LM, labels = input_ids
-    })
-
-    logger.info(f"Created dataset with {len(dataset)} examples")
-    return dataset
+from trl import SFTTrainer, SFTConfig
 
 
 def setup_model_and_tokenizer(section: str, config: Dict):
@@ -214,7 +156,15 @@ def train(
     # Setup model and tokenizer
     model, tokenizer, max_length = setup_model_and_tokenizer(section, model_config)
 
-    # Load datasets
+    # Verify tokenizer has chat template support
+    if not hasattr(tokenizer, 'apply_chat_template'):
+        raise ValueError(
+            f"Tokenizer for {model_config.get('rw_model_id' if section == 'reading_writing' else 'math_model_id')} "
+            f"doesn't support chat templates. "
+            f"SFTTrainer requires a tokenizer with chat_template attribute."
+        )
+
+    # Load datasets using load_dataset
     data_dir = Path(paths_config.get("data_dir", "data"))
     training_dir = Path(paths_config.get("training_dir", "data/training"))
     validated_dir = Path(paths_config.get("validated_dir", "data/validated"))
@@ -228,22 +178,40 @@ def train(
         logger.error(f"Training file not found: {train_file}")
         sys.exit(1)
 
-    # Find validation file
+    logger.info(f"Loading training data from: {train_file}")
+
+    # Load training dataset
+    train_dataset = load_dataset(
+        "json",
+        data_files=str(train_file),
+        split="train"
+    )
+    logger.info(f"Loaded {len(train_dataset)} training examples")
+
+    # Verify data format
+    if "messages" not in train_dataset.column_names:
+        raise ValueError(
+            f"Training data must have 'messages' field. "
+            f"Found columns: {train_dataset.column_names}"
+        )
+
+    # Find and load validation file
     val_file = validated_dir / f"{section}_val.jsonl"
     if not val_file.exists():
         val_file = data_dir / "splits" / f"{section}_val.jsonl"
 
-    # Create datasets
-    train_dataset = create_dataset_from_jsonl(str(train_file), tokenizer, max_length)
-
     val_dataset = None
     if val_file.exists():
-        val_dataset = create_dataset_from_jsonl(str(val_file), tokenizer, max_length)
-    else:
-        logger.warning(f"Validation file not found: {val_file}")
+        logger.info(f"Loading validation data from: {val_file}")
+        val_dataset = load_dataset(
+            "json",
+            data_files=str(val_file),
+            split="train"
+        )
+        logger.info(f"Loaded {len(val_dataset)} validation examples")
 
-    # Setup training arguments
-    training_args = TrainingArguments(
+    # Setup training arguments using SFTConfig
+    sft_config = SFTConfig(
         output_dir=str(run_dir),
         learning_rate=training_config.get("learning_rate", 2e-5),
         per_device_train_batch_size=training_config.get("batch_size", 4),
@@ -254,7 +222,7 @@ def train(
         logging_steps=10,
         save_steps=500,
         save_total_limit=3,
-        evaluation_strategy="steps" if val_dataset else "no",
+        eval_strategy="steps" if val_dataset else "no",
         eval_steps=500 if val_dataset else None,
         fp16=False,
         bf16=True,
@@ -266,15 +234,17 @@ def train(
         save_strategy="steps",
         load_best_model_at_end=False,
         run_name=f"{section}_{timestamp}",
+        dataset_text_field="messages",  # Use the 'messages' field from JSONL
+        max_length=max_length,
     )
 
-    # Create trainer
-    trainer = Trainer(
+    # Create SFTTrainer
+    trainer = SFTTrainer(
         model=model,
-        args=training_args,
+        args=sft_config,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     # Resume from checkpoint if specified
