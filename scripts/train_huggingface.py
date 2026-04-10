@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -25,7 +26,7 @@ from transformers import (
 from trl import SFTTrainer, SFTConfig
 
 
-def setup_model_and_tokenizer(section: str, config: Dict):
+def setup_model_and_tokenizer(section: str, config: Dict, max_retries: int = 3):
     """Setup model, tokenizer, and LoRA configuration."""
 
     # Select model
@@ -46,19 +47,58 @@ def setup_model_and_tokenizer(section: str, config: Dict):
         bnb_4bit_use_double_quant=True,
     )
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    # Load model with retry logic
+    model = None
+    tokenizer = None
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-    )
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Download attempt {attempt + 1}/{max_retries}...")
+
+            # Load model
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+                local_files_only=False,  # Allow download
+            )
+
+            # Load tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                local_files_only=False,
+            )
+
+            logger.info("✅ Model and tokenizer loaded successfully")
+            break
+
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
+
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 5  # Exponential backoff
+                logger.info(f"Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+
+                # Clean up potentially corrupted download
+                logger.info("Cleaning up cache and retrying...")
+                import shutil
+                cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+                if cache_dir.exists():
+                    # Only remove the specific model cache
+                    model_cache = cache_dir / f"models--{model_name.replace('/', '--')}"
+                    if model_cache.exists():
+                        shutil.rmtree(model_cache)
+                        logger.info(f"Removed corrupted cache: {model_cache}")
+            else:
+                logger.error("Failed to load model after all retries")
+                logger.error("Suggestions:")
+                logger.error("1. Check disk space: df -h")
+                logger.error("2. Try downloading model first: python scripts/download_model.py --model phi-4")
+                logger.error("3. Check network connection")
+                raise
 
     # Set pad token if needed
     if tokenizer.pad_token is None:
