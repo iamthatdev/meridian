@@ -12,9 +12,9 @@ models:
   fallback_model_id: meta-llama/Llama-3.1-8B-Instruct
 
 lora:
-  r: 32
-  alpha: 64
-  dropout: 0.05
+  r: 16
+  alpha: 32
+  dropout: 0.1
 
 quantization:
   load_in_4bit: true
@@ -25,12 +25,15 @@ quantization:
 
 training:
   learning_rate: 2e-5
-  batch_size: 4
-  gradient_accumulation_steps: 16
+  batch_size: 8
+  gradient_accumulation_steps: 2
   num_epochs: 3
   max_seq_length_rw: 4096
   max_seq_length_math: 2048
   warmup_ratio: 0.05
+  # Optimized for A100 40GB with gradient checkpointing
+  # Peak VRAM usage: ~18 GB (55% safety margin)
+  # Effective batch size: 16 (8 × 2)
 
 paths:
   data_dir: /root/meridian/data
