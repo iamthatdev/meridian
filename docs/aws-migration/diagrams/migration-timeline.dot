@@ -1,0 +1,34 @@
+digraph MigrationTimeline {
+    rankdir=LR;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Week 1
+    week1 [label="Week 1", shape=ellipse, fillcolor="#2EA44F", fontcolor="white"];
+    phase1 [label="Phase 1: Foundation\n(Days 1-3)\n• AWS setup\n• S3 buckets\n• Data migration\n• GPU AMI", fillcolor="#E8F5E9"];
+    phase2 [label="Phase 2: CDK Infrastructure\n(Days 4-6)\n• CDK project\n• Deploy stack\n• Test infrastructure", fillcolor="#E8F5E9"];
+
+    // Week 2
+    week2 [label="Week 2", shape=ellipse, fillcolor="#FF9900", fontcolor="white"];
+    phase3 [label="Phase 3: Script Migration\n(Days 7-9)\n• Cost estimator\n• Spot handler\n• Cost tracker", fillcolor="#FFF3E0"];
+    phase4 [label="Phase 4: GitHub Actions\n(Days 10-12)\n• Configure secrets\n• Create workflows\n• Test E2E", fillcolor="#FFF3E0"];
+
+    // Week 3
+    week3 [label="Week 3", shape=ellipse, fillcolor="#232F3E", fontcolor="white"];
+    phase5 [label="Phase 5: Parallel Testing\n(Days 13-15)\n• RunPod vs AWS\n• Compare results\n• Validate outputs", fillcolor="#E3F2FD"];
+    phase6 [label="Phase 6: Cutover\n(Day 16)\n• Final verification\n• Update docs\n• Decommission RunPod", fillcolor="#E3F2FD"];
+
+    // Connect
+    week1 -> phase1 -> phase2;
+    week2 -> phase3 -> phase4;
+    week3 -> phase5 -> phase6;
+
+    // Timeline
+    phase2 -> phase3 [label="Week 1-2"];
+    phase4 -> phase5 [label="Week 2-3"];
+    phase6 -> complete [label="Complete!", shape=ellipse, fillcolor="#2EA44F", fontcolor="white"];
+
+    // Summary
+    summary [label="Total: 16 days (~2.5 weeks)\nRisk: Low (parallel testing)\nCost Savings: ~23-30% vs RunPod", shape=note, fillcolor="#FFF9C4"];
+    complete -> summary;
+}

@@ -1,0 +1,23 @@
+digraph CDKStackStructure {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Main stack
+    main [label="TrainingStack\n(Main CDK Stack)", fillcolor="#FF9900", fontcolor="white", shape=folder];
+
+    // Constructs
+    vpc [label="VpcConstruct\n• VPC\n• Subnets\n• NAT GW\n• S3 Endpoints", fillcolor="#232F3E", fontcolor="white"];
+    s3 [label="S3Construct\n• Data bucket\n• Checkpoint bucket\n• Models bucket\n• Lifecycle policies", fillcolor="#232F3E", fontcolor="white"];
+    iam [label="IAMConstruct\n• EC2 role\n• S3 access\n• CloudWatch access\n• Cost Explorer access", fillcolor="#232F3E", fontcolor="white"];
+    ec2 [label="EC2Construct\n• Launch Template\n• Auto Scaling Group\n• Spot Fleet\n• User Data", fillcolor="#232F3E", fontcolor="white"];
+    monitoring [label="MonitoringConstruct\n• CloudWatch Dashboard\n• SNS Topic\n• Custom Metrics\n• Alarms", fillcolor="#232F3E", fontcolor="white"];
+    security [label="SecurityConstruct\n• Security Groups\n• KMS Keys\n• IAM Policies", fillcolor="#232F3E", fontcolor="white"];
+
+    // Outputs
+    outputs [label="Stack Outputs:\n• ASG Name\n• Checkpoint Bucket\n• Dashboard URL", shape=note, fillcolor="#FFF9C4"];
+
+    // Connect
+    main -> {vpc, s3, iam, ec2, monitoring, security};
+    {vpc, s3, iam, ec2, monitoring, security} -> outputs;
+}

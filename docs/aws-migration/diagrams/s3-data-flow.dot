@@ -1,0 +1,34 @@
+digraph S3DataFlow {
+    rankdir=LR;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Local
+    local [label="Local Machine\nData Generation", fillcolor="#2EA44F", fontcolor="white"];
+
+    // Upload
+    upload [label="Upload to S3\naws s3 sync", shape=ellipse, fillcolor="#E8F5E9"];
+
+    // S3 buckets
+    training_data [label="s3://meridian-training-data/\n• train.jsonl\n• val.jsonl\n• test.jsonl", fillcolor="#FF9900", fontcolor="white"];
+    checkpoints [label="s3://meridian-checkpoints/\n• checkpoint-500/\n• checkpoint-1000/\n• final_model/", fillcolor="#FF9900", fontcolor="white"];
+    models [label="s3://meridian-models-prod/\n• math-sft-v1.0/\n• rw-sft-v1.0/", fillcolor="#FF9900", fontcolor="white"];
+    jobs [label="s3://meridian-training-jobs/\n• manifest.json\n• logs/\n• reports/", fillcolor="#FF9900", fontcolor="white"];
+
+    // EC2
+    ec2 [label="EC2 Spot Instance\nTraining Process", fillcolor="#232F3E", fontcolor="white"];
+
+    // Streaming
+    stream [label="Stream Data from S3\n(datasets library)", shape=ellipse, fillcolor="#E3F2FD"];
+    checkpoint_stream [label="Sync Checkpoints to S3\n(every 500 steps)", shape=ellipse, fillcolor="#E3F2FD"];
+
+    // Flow
+    local -> upload -> training_data;
+    training_data -> ec2 [label="GitHub Actions\ntriggers job"];
+    ec2 -> stream [label="Reads training\ndata"];
+    stream -> ec2 [label="Streaming"];
+    ec2 -> checkpoint_stream [label="Saves\ncheckpoints"];
+    checkpoint_stream -> checkpoints;
+    ec2 -> models [label="Uploads\nfinal model"];
+    ec2 -> jobs [label="Uploads\nlogs/reports"];
+}

@@ -1,0 +1,36 @@
+digraph GitHubActionsWorkflow {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Trigger
+    trigger [label="Workflow Trigger\nManual or Push to main", fillcolor="#2EA44F", fontcolor="white"];
+
+    // Steps
+    step1 [label="1. Cost Estimation\nRun cost_estimator.py", fillcolor="#FFF9C4"];
+    step2 [label="2. Infrastructure Validation\nVerify CDK stack deployed", fillcolor="#FFF9C4"];
+    step3 [label="3. Data Validation\nCheck S3 for valid data", fillcolor="#FFF9C4"];
+    step4 [label="4. Create Job Manifest\nUpload to S3", fillcolor="#FFF9C4"];
+    step5 [label="5. Start EC2 Instance\nUpdate ASG capacity 0→1", fillcolor="#FFF9C4"];
+    step6 [label="6. Monitor Training\nRun cost_tracker.py --follow", fillcolor="#FFF9C4"];
+    step7 [label="7. Wait for Completion\nPoll job status from S3", fillcolor="#FFF9C4"];
+    step8 [label="8. Generate Final Report\nDownload from S3 + summary", fillcolor="#FFF9C4"];
+    step9 [label="9. Cleanup\nReturn ASG to capacity 0", fillcolor="#FFF9C4"];
+
+    // AWS actions
+    aws [label="AWS Cloud\n(EC2, S3, CloudWatch)", fillcolor="#FF9900", fontcolor="white", shape=cloud];
+
+    // Connect
+    trigger -> step1 -> step2 -> step3 -> step4 -> step5 -> step6 -> step7 -> step8 -> step9;
+
+    // AWS interactions
+    step1 -> aws [label="Query spot prices"];
+    step2 -> aws [label="Validate stack"];
+    step3 -> aws [label="Check S3 data"];
+    step4 -> aws [label="Upload manifest"];
+    step5 -> aws [label="Launch instance"];
+    step6 -> aws [label="Monitor metrics"];
+    step7 -> aws [label="Poll status"];
+    step8 -> aws [label="Download report"];
+    step9 -> aws [label="Stop instance"];
+}

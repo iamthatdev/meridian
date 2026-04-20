@@ -1,0 +1,38 @@
+digraph ArchitectureOverview {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // GitHub Actions
+    github [label="GitHub Actions\n(Orchestration)", fillcolor="#2EA44F", fontcolor="white"];
+
+    // AWS Cloud
+    aws [label="AWS Cloud", shape=folder, fillcolor="#FF9900", fontcolor="white"];
+
+    // CDK Components
+    vpc [label="VPC + Subnets", fillcolor="#232F3E", fontcolor="white"];
+    ec2 [label="EC2 Spot Fleet", fillcolor="#232F3E", fontcolor="white"];
+    s3 [label="S3 Buckets", fillcolor="#232F3E", fontcolor="white"];
+    iam [label="IAM Roles", fillcolor="#232F3E", fontcolor="white"];
+    cw [label="CloudWatch", fillcolor="#232F3E", fontcolor="white"];
+    asg [label="Auto Scaling", fillcolor="#232F3E", fontcolor="white"];
+
+    // EC2 Instances
+    instances [label="EC2 Spot Instances\n(Training Compute)", fillcolor="#FF9900", fontcolor="white"];
+
+    // S3 Storage
+    storage [label="S3 Storage\n(Data Layer)", fillcolor="#FF9900", fontcolor="white"];
+
+    // Connect GitHub to AWS
+    github -> aws [label="Triggers via AWS SDK"];
+
+    // Connect AWS to components
+    aws -> {vpc, ec2, s3, iam, cw, asg};
+
+    // Connect to instances
+    asg -> instances;
+
+    // Connect to storage
+    instances -> storage [label="Streams data"];
+    ec2 -> storage [label="Syncs checkpoints"];
+}

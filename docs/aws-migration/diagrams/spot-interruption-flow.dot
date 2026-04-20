@@ -1,0 +1,51 @@
+digraph SpotInterruptionFlow {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Start
+    start [label="AWS Sends 2-Minute\nInterruption Warning", fillcolor="#FF9900", fontcolor="white"];
+
+    // Detection
+    detect [label="Instance Metadata Service\nDetects Warning", fillcolor="#232F3E", fontcolor="white"];
+
+    // Signal handling
+    signal [label="Background Daemon\nCatches SIGTERM", fillcolor="#232F3E", fontcolor="white"];
+
+    // Training process
+    training [label="Training Process\nReceives SIGTERM", fillcolor="#2EA44F", fontcolor="white"];
+    finish_step [label="1. Finish Current Step\n(max 30 sec)", fillcolor="#2EA44F", fontcolor="white"];
+    save_checkpoint [label="2. Save Checkpoint to S3", fillcolor="#2EA44F", fontcolor="white"];
+    upload_logs [label="3. Upload Training Logs", fillcolor="#2EA44F", fontcolor="white"];
+    write_state [label="4. Write Recovery State\nto S3", fillcolor="#2EA44F", fontcolor="white"];
+
+    // CloudWatch detection
+    cloudwatch [label="CloudWatch Events\nDetects Termination", fillcolor="#232F3E", fontcolor="white"];
+
+    // ASG response
+    asg_launch [label="Auto Scaling Group\nLaunches Replacement", fillcolor="#FF9900", fontcolor="white"];
+
+    // New instance
+    new_instance [label="New Instance Boots", fillcolor="#2EA44F", fontcolor="white"];
+    check_s3 [label="1. Check S3 for\nIncomplete Training", fillcolor="#2EA44F", fontcolor="white"];
+    download_checkpoint [label="2. Download Latest\nCheckpoint", fillcolor="#2EA44F", fontcolor="white"];
+    resume_training [label="3. Resume from\nExact Step/Epoch", fillcolor="#2EA44F", fontcolor="white"];
+    continue [label="4. Continue Training", fillcolor="#2EA44F", fontcolor="white"];
+
+    // Connect nodes
+    start -> detect;
+    detect -> signal;
+    signal -> training;
+    training -> finish_step;
+    finish_step -> save_checkpoint;
+    save_checkpoint -> upload_logs;
+    upload_logs -> write_state;
+
+    signal -> cloudwatch;
+    cloudwatch -> asg_launch;
+    asg_launch -> new_instance;
+    new_instance -> check_s3;
+    check_s3 -> download_checkpoint;
+    download_checkpoint -> resume_training;
+    resume_training -> continue;
+}

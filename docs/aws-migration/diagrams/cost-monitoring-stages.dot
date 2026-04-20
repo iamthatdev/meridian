@@ -1,0 +1,38 @@
+digraph CostMonitoringStages {
+    rankdir=LR;
+    node [shape=box, style=filled, fontname="Arial"];
+    edge [fontname="Arial"];
+
+    // Stage 1: Pre-training
+    stage1 [label="Stage 1: Pre-Training\nCost Estimation", fillcolor="#2EA44F", fontcolor="white"];
+    estimate1 [label="User Runs:\ncost_estimator.py", shape=ellipse, fillcolor="#E8F5E9"];
+    estimate2 [label="Queries AWS Spot Price API", shape=ellipse, fillcolor="#E8F5E9"];
+    estimate3 [label="Calculates:\n• Training time\n• Spot price range\n• Instance hours\n• Storage/transfer costs", shape=ellipse, fillcolor="#E8F5E9"];
+    estimate4 [label="Output:\nCost Estimate Report\nwith 85% confidence", shape=note, fillcolor="#FFF9C4"];
+
+    // Stage 2: Real-time
+    stage2 [label="Stage 2: Real-Time\nCost Tracking", fillcolor="#FF9900", fontcolor="white"];
+    realtime1 [label="Cost Monitoring\nSidecar Starts", shape=ellipse, fillcolor="#FFF3E0"];
+    realtime2 [label="CloudWatch Dashboard\nUpdates Every 60s", shape=ellipse, fillcolor="#FFF3E0"];
+    realtime3 [label="Shows:\n• Current cost\n• Projected cost\n• Spot price\n• GPU utilization\n• Progress %", shape=ellipse, fillcolor="#FFF3E0"];
+    realtime4 [label="CLI Query:\ncost_tracker.py\n--follow", shape=note, fillcolor="#FFF9C4"];
+
+    // Stage 3: Post-training
+    stage3 [label="Stage 3: Post-Training\nCost Breakdown", fillcolor="#232F3E", fontcolor="white"];
+    final1 [label="Job Completes →\nSNS Notification", shape=ellipse, fillcolor="#E3F2FD"];
+    final2 [label="Generate Final Report:\n• Actual cost\n• vs Estimate\n• vs On-Demand\n• Performance metrics\n• Optimization insights", shape=ellipse, fillcolor="#E3F2FD"];
+    final3 [label="Output:\nDetailed Cost Report\nSaved to S3 + Emailed", shape=note, fillcolor="#FFF9C4"];
+
+    // Connect stage 1
+    stage1 -> estimate1 -> estimate2 -> estimate3 -> estimate4;
+
+    // Connect stage 2
+    stage2 -> realtime1 -> realtime2 -> realtime3 -> realtime4;
+
+    // Connect stage 3
+    stage3 -> final1 -> final2 -> final3;
+
+    // Connect stages
+    estimate4 -> stage2 [label="Triggers training"];
+    realtime4 -> stage3 [label="Job completes"];
+}
